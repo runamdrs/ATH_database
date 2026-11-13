@@ -1,30 +1,34 @@
 import streamlit as st
-from achievement_service import search_achievements
 
-st.title("Social Media App")
-st.write("Welcome to the Social Media App!")
+from athlete_service import search_athletes, get_skill_levels
+from achievement_service import search_achievements, get_dates_earned
 
-st.header("Search Anime")
+st.title("ATH")
+st.write(
+    "A platform where athletes build profiles, log workouts, share achievements, "
+    "find people to train or play with, and earn Activity Points toward sponsor rewards."
+)
 
-search = st.text_input("Enter an anime title")
+section = st.sidebar.radio("Browse", ["Athletes", "Achievements"])
 
-if st.button("Search"):
-    st.write("Searching for:",search)
+if section == "Athletes":
+    st.header("Find Athletes")
 
-date_earned = st.selectbox(
-    "Select a date earned", 
-    ["2024-01-01", "2024-01-02", "2024-01-03"]
-    )
+    search = st.text_input("Search by name or username")
+    skill_level = st.selectbox("Skill level", get_skill_levels())
 
-filtered_achievements = search_achievements(search, date_earned)
+    results = search_athletes(search, skill_level)
 
-import mysql.connector
-from database import get_connection
+    st.dataframe(results)
+    st.write(f"{len(results)} athlete(s) found.")
 
-if st.button("Test Connection"):
-    try:
-        connection = get_connection()
-        st.write("Connected to the database")
-        connection.close()
-    except mysql.connector.Error as error:
-        st.error(f"Connection Failed: {error}")
+elif section == "Achievements":
+    st.header("Browse Achievements")
+
+    search = st.text_input("Search by achievement title")
+    date_earned = st.selectbox("Date earned", get_dates_earned())
+
+    results = search_achievements(search, date_earned)
+
+    st.dataframe(results)
+    st.write(f"{len(results)} achievement(s) found.")
