@@ -3,53 +3,9 @@ import streamlit as st
 
 
 # ---------------------------------------------------------------
-# Part 1: sample data
-# Rows mirror the INSERT statements in ATH_database.sql so the
-# interface looks the same before and after the MySQL swap.
-# ---------------------------------------------------------------
-
-def get_all_athletes():
-    return [
-        {"AthleteID": 1, "Name": "Alex Morgan", "Username": "alexmorgan",
-         "Email": "alex.morgan@example.com", "Location": "Hickory, NC",
-         "SkillLevel": "Advanced"},
-        {"AthleteID": 2, "Name": "Jordan Lee", "Username": "jordanlee",
-         "Email": "jordan.lee@example.com", "Location": "Charlotte, NC",
-         "SkillLevel": "Intermediate"},
-        {"AthleteID": 3, "Name": "Taylor Smith", "Username": "taylorsmith",
-         "Email": "taylor.smith@example.com", "Location": "Atlanta, GA",
-         "SkillLevel": "Advanced"},
-        {"AthleteID": 4, "Name": "Chris Davis", "Username": "chrisdavis",
-         "Email": "chris.davis@example.com", "Location": "Columbia, SC",
-         "SkillLevel": "Beginner"},
-        {"AthleteID": 5, "Name": "Sam Wilson", "Username": "samwilson",
-         "Email": "sam.wilson@example.com", "Location": "Greenville, SC",
-         "SkillLevel": "Intermediate"},
-    ]
-
-
-def get_all_achievements():
-    return [
-        {"AchievementID": 1, "AthleteID": 1, "Title": "Tournament Top 10",
-         "Description": "Finished in the top ten at a golf tournament.",
-         "DateEarned": "2026-10-10"},
-        {"AchievementID": 2, "AthleteID": 2, "Title": "Team MVP",
-         "Description": "Recognized for outstanding basketball performance.",
-         "DateEarned": "2026-09-25"},
-        {"AchievementID": 3, "AthleteID": 3, "Title": "Scoring Leader",
-         "Description": "Led the team in goals during the season.",
-         "DateEarned": "2026-10-05"},
-        {"AchievementID": 4, "AthleteID": 4, "Title": "Personal Best",
-         "Description": "Achieved a personal best in the 100-meter freestyle.",
-         "DateEarned": "2026-10-12"},
-        {"AchievementID": 5, "AthleteID": 5, "Title": "Sprint Record",
-         "Description": "Set a new personal record in the 100-meter sprint.",
-         "DateEarned": "2026-10-15"},
-    ]
-
-
-# ---------------------------------------------------------------
-# Database connection (used in Part 2)
+# Data layer: the only file that talks to MySQL.
+# Credentials come from .streamlit/secrets.toml (gitignored),
+# never from this source file.
 # ---------------------------------------------------------------
 
 def get_connection():
@@ -59,4 +15,89 @@ def get_connection():
         user=st.secrets["db_user"],
         password=st.secrets["db_password"],
         database=st.secrets["db_name"]
+    )
+
+
+def run_select(query, params=None):
+    """Run a SELECT and return the rows as a list of dicts,
+    the same shape the sample data used in Part 1."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(query, params or ())
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    finally:
+        connection.close()
+
+
+def run_write(query, params=None):
+    """Run an INSERT/UPDATE/DELETE, commit it, and return how many
+    rows were affected. Without commit() MySQL discards the change."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(query, params or ())
+        connection.commit()
+        rowcount = cursor.rowcount
+        cursor.close()
+        return rowcount
+    finally:
+        connection.close()
+
+
+def get_all_athletes():
+    return run_select(
+        """
+        SELECT AthleteID, Name, Username, Email, Location, SkillLevel
+        FROM athlete
+        ORDER BY AthleteID
+        """
+    )
+
+
+def get_all_achievements():
+    return run_select(
+        """
+        SELECT AchievementID, AthleteID, Title, Description, DateEarned
+        FROM achievement
+        ORDER BY AchievementID
+        """
+    )
+
+
+def get_all_sports():
+    return run_select(
+        """
+        SELECT SportID, Name
+        FROM sport
+        ORDER BY Name
+        """
+    )
+
+
+# ---------------------------------------------------------------
+# INSERTs: values are passed separately as a tuple and MySQL
+# Connector fills in the %s placeholders safely. Never build SQL
+# with f-strings or + (that opens the door to SQL injection).
+# ---------------------------------------------------------------
+
+def insert_athlete(name, username, email, location, skill_level):
+    return run_write(
+        """
+        INSERT INTO athlete (Name, Username, Email, Location, SkillLevel)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (name, username, email, location, skill_level)
+    )
+
+
+def insert_achievement(athlete_id, sport_id, title, description, date_earned):
+    return run_write(
+        """
+        INSERT INTO achievement (AthleteID, SportID, Title, Description, DateEarned)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (athlete_id, sport_id, title, description, date_earned)
     )

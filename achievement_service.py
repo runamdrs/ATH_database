@@ -1,4 +1,6 @@
-from database import get_all_achievements
+import mysql.connector
+
+from database import get_all_achievements, get_all_sports, insert_achievement
 
 
 def search_achievements(search, date_earned):
@@ -23,3 +25,29 @@ def get_dates_earned():
     """Build the dropdown options from the data itself."""
     dates = {str(a["DateEarned"]) for a in get_all_achievements()}
     return ["All"] + sorted(dates)
+
+
+def get_sport_options():
+    """Map SportID -> sport name for the achievement form's dropdown."""
+    return {s["SportID"]: s["Name"] for s in get_all_sports()}
+
+
+def add_achievement(athlete_id, sport_id, title, description, date_earned):
+    """Validate the input, then insert it. Returns (success, message).
+    sport_id may be None, which is stored as SQL NULL."""
+    title = (title or "").strip()
+    description = (description or "").strip() or None
+
+    if not title:
+        return False, "Title is required."
+    if athlete_id is None:
+        return False, "Please choose an athlete."
+
+    try:
+        insert_achievement(athlete_id, sport_id, title, description, date_earned)
+    except mysql.connector.IntegrityError as e:
+        if e.errno == 1452:  # foreign key violation
+            return False, "That athlete or sport no longer exists."
+        return False, f"Could not add achievement: {e.msg}"
+
+    return True, f'Added achievement "{title}".'
