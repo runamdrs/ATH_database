@@ -6,6 +6,7 @@ from athlete_service import (
 from achievement_service import (
     search_achievements, get_dates_earned, get_sport_options, add_achievement,
 )
+from activity_service import search_activities, get_activity_sports, add_activity
 
 st.title("ATH")
 st.write(
@@ -25,7 +26,7 @@ def show_result(success, message):
         st.error(message)
 
 
-section = st.sidebar.radio("Browse", ["Athletes", "Achievements"])
+section = st.sidebar.radio("Browse", ["Athletes", "Achievements", "Activities"])
 
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
@@ -88,3 +89,48 @@ elif section == "Achievements":
 
     if submitted:
         show_result(*add_achievement(athlete_id, sport_id, title, description, new_date_earned))
+
+elif section == "Activities":
+    st.header("Browse Activities")
+
+    search = st.text_input("Search by activity type or location")
+    sport = st.selectbox("Sport", get_activity_sports())
+
+    results = search_activities(search, sport)
+
+    st.dataframe(results)
+    st.write(f"{len(results)} activity(ies) found.")
+
+    st.subheader("Add an Activity")
+    athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+    sport_options = get_sport_options()       # {SportID: "Sport name"}
+
+    with st.form("add_activity"):
+        activity_type = st.text_input("Activity type (e.g. Soccer Practice)")
+        # Dropdowns show names but return real IDs (foreign key safe).
+        athlete_id = st.selectbox(
+            "Organized by",
+            options=list(athlete_options),
+            format_func=lambda athlete_id: athlete_options[athlete_id],
+        )
+        # SportID is NOT NULL for activities, so there is no "None" option.
+        sport_id = st.selectbox(
+            "Sport",
+            options=list(sport_options),
+            format_func=lambda sport_id: sport_options[sport_id],
+        )
+        date = st.date_input("Date")
+        time = st.time_input("Start time")
+        duration = st.number_input("Duration (minutes)", min_value=1, value=60, step=5)
+        location = st.text_input("Location (optional)")
+        # value=None leaves the box empty, which is stored as NULL.
+        max_participants = st.number_input(
+            "Max participants (optional)", min_value=1, value=None, step=1
+        )
+        submitted = st.form_submit_button("Add Activity")
+
+    if submitted:
+        show_result(*add_activity(
+            athlete_id, sport_id, activity_type, date, time, duration,
+            location, max_participants,
+        ))

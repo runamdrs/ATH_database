@@ -67,6 +67,25 @@ def get_all_achievements():
     )
 
 
+def get_all_activities():
+    # JOIN sport so the table shows the sport's name, not just its ID.
+    rows = run_select(
+        """
+        SELECT a.ActivityID, a.AthleteID, s.Name AS Sport, a.Type,
+               a.Date, a.Time, a.Duration, a.Location, a.MaxParticipants
+        FROM activity a
+        JOIN sport s ON s.SportID = a.SportID
+        ORDER BY a.ActivityID
+        """
+    )
+    # MySQL Connector returns TIME columns as a timedelta, which the
+    # table would show as "0 days 09:00:00". Turn it into "09:00".
+    for row in rows:
+        minutes = int(row["Time"].total_seconds()) // 60
+        row["Time"] = f"{minutes // 60:02d}:{minutes % 60:02d}"
+    return rows
+
+
 def get_all_sports():
     return run_select(
         """
@@ -100,4 +119,17 @@ def insert_achievement(athlete_id, sport_id, title, description, date_earned):
         VALUES (%s, %s, %s, %s, %s)
         """,
         (athlete_id, sport_id, title, description, date_earned)
+    )
+
+
+def insert_activity(athlete_id, sport_id, activity_type, date, time, duration,
+                    location, max_participants):
+    return run_write(
+        """
+        INSERT INTO activity (AthleteID, SportID, Type, Date, Time, Duration,
+                              Location, MaxParticipants)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (athlete_id, sport_id, activity_type, date, time, duration,
+         location, max_participants)
     )
