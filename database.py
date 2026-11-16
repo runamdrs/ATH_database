@@ -47,43 +47,6 @@ def run_write(query, params=None):
         connection.close()
 
 
-@st.cache_resource
-def ensure_auto_increment():
-    """Make sure athlete.AthleteID and achievement.AchievementID are
-    AUTO_INCREMENT, so INSERTs work without supplying an ID.
-
-    The original CREATE TABLE statements didn't include it, so this
-    fixes each teammate's database automatically the first time
-    something is added. @st.cache_resource runs it once per app start.
-    FOREIGN_KEY_CHECKS is switched off only for the ALTER, because MySQL
-    won't modify a column other tables reference; the column type stays
-    INT, so every foreign key remains valid."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        for table, column in [("athlete", "AthleteID"), ("achievement", "AchievementID")]:
-            cursor.execute(
-                """
-                SELECT EXTRA FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
-                """,
-                (table, column)
-            )
-            row = cursor.fetchone()
-            if row and "auto_increment" not in row[0].lower():
-                cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-                try:
-                    # Table/column names can't be %s placeholders; these
-                    # come from the fixed list above, never from user input.
-                    cursor.execute(f"ALTER TABLE {table} MODIFY {column} INT NOT NULL AUTO_INCREMENT")
-                finally:
-                    cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        cursor.close()
-    finally:
-        connection.close()
-    return True
-
-
 def get_all_athletes():
     return run_select(
         """
@@ -121,7 +84,6 @@ def get_all_sports():
 # ---------------------------------------------------------------
 
 def insert_athlete(name, username, email, location, skill_level):
-    ensure_auto_increment()
     return run_write(
         """
         INSERT INTO athlete (Name, Username, Email, Location, SkillLevel)
@@ -132,7 +94,6 @@ def insert_athlete(name, username, email, location, skill_level):
 
 
 def insert_achievement(athlete_id, sport_id, title, description, date_earned):
-    ensure_auto_increment()
     return run_write(
         """
         INSERT INTO achievement (AthleteID, SportID, Title, Description, DateEarned)
