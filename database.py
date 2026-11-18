@@ -29,10 +29,11 @@ def run_select(query, params=None):
     connection = get_connection()
     try:
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
+        try:
+            cursor.execute(query, params or ())
+            return cursor.fetchall()
+        finally:
+            cursor.close()
     finally:
         connection.close()
 
@@ -43,11 +44,15 @@ def run_write(query, params=None):
     connection = get_connection()
     try:
         cursor = connection.cursor()
-        cursor.execute(query, params or ())
-        connection.commit()
-        rowcount = cursor.rowcount
-        cursor.close()
-        return rowcount
+        try:
+            cursor.execute(query, params or ())
+            connection.commit()
+            return cursor.rowcount
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
     finally:
         connection.close()
 
@@ -94,9 +99,77 @@ def get_all_activities():
 def get_all_sports():
     return run_select(
         """
-        SELECT SportID, Name
+        SELECT SportID, Name, Type
         FROM sport
         ORDER BY Name
+        """
+    )
+
+
+def get_all_workouts():
+    return run_select(
+        """
+        SELECT w.WorkoutID, w.AthleteID, a.Name AS Athlete, w.ScheduledDate,
+               w.WorkoutType, w.Duration, w.CompletionStatus, w.TrainingNotes
+        FROM workout w
+        JOIN athlete a ON a.AthleteID = w.AthleteID
+        ORDER BY w.ScheduledDate DESC, w.WorkoutID DESC
+        """
+    )
+
+
+def get_all_sponsors():
+    return run_select(
+        """
+        SELECT SponsorID, Company, SponsorType, ContactInformation
+        FROM sponsor
+        ORDER BY Company, SponsorID
+        """
+    )
+
+
+def get_rewards_for_athlete(athlete_id):
+    return run_select(
+        """
+        SELECT r.RewardID, r.Description, r.PointsRequired, r.Availability,
+               r.ExpirationDate, s.Company AS Sponsor,
+               COALESCE(
+                   (SELECT SUM(ap.PointsEarned)
+                    FROM activity_point ap
+                    WHERE ap.AthleteID = %s),
+                   0
+               ) AS AthletePoints,
+               CASE
+                   WHEN r.PointsRequired <= COALESCE(
+                       (SELECT SUM(ap.PointsEarned)
+                        FROM activity_point ap
+                        WHERE ap.AthleteID = %s),
+                       0
+                   )
+                    AND r.Availability > 0
+                    AND r.ExpirationDate >= CURDATE()
+                   THEN 1
+                   ELSE 0
+               END AS IsEligible
+        FROM reward r
+        JOIN sponsor s ON s.SponsorID = r.SponsorID
+        ORDER BY r.PointsRequired, r.Description
+        """,
+        (athlete_id, athlete_id),
+    )
+
+
+def get_all_redemptions():
+    return run_select(
+        """
+        SELECT rr.RedemptionID, rr.AthleteID, a.Name AS Athlete,
+               rr.RewardID, r.Description AS Reward, s.Company AS Sponsor,
+               rr.RedemptionDate, rr.Status
+        FROM reward_redemption rr
+        JOIN athlete a ON a.AthleteID = rr.AthleteID
+        JOIN reward r ON r.RewardID = rr.RewardID
+        JOIN sponsor s ON s.SponsorID = r.SponsorID
+        ORDER BY rr.RedemptionDate DESC, rr.RedemptionID DESC
         """
     )
 
@@ -249,4 +322,114 @@ def delete_activity(activity_id):
     return run_write(
         "DELETE FROM activity WHERE ActivityID = %s",
         (activity_id,)
+    )
+
+
+def insert_workout(athlete_id, scheduled_date, workout_type, duration,
+                   completion_status, training_notes):
+    return run_write(
+        """
+        INSERT INTO workout
+            (AthleteID, ScheduledDate, WorkoutType, Duration,
+             CompletionStatus, TrainingNotes)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (athlete_id, scheduled_date, workout_type, duration,
+         completion_status, training_notes),
+    )
+
+
+def update_workout(workout_id, athlete_id, scheduled_date, workout_type,
+                   duration, completion_status, training_notes):
+    return run_write(
+        """
+        UPDATE workout
+        SET AthleteID = %s, ScheduledDate = %s, WorkoutType = %s,
+            Duration = %s, CompletionStatus = %s, TrainingNotes = %s
+        WHERE WorkoutID = %s
+        """,
+        (athlete_id, scheduled_date, workout_type, duration,
+         completion_status, training_notes, workout_id),
+    )
+
+
+def delete_workout(workout_id):
+    return run_write(
+        "DELETE FROM workout WHERE WorkoutID = %s",
+        (workout_id,),
+    )
+
+
+def insert_sport(name, sport_type):
+    return run_write(
+        "INSERT INTO sport (Name, Type) VALUES (%s, %s)",
+        (name, sport_type),
+    )
+
+
+def update_sport(sport_id, name, sport_type):
+    return run_write(
+        "UPDATE sport SET Name = %s, Type = %s WHERE SportID = %s",
+        (name, sport_type, sport_id),
+    )
+
+
+def delete_sport(sport_id):
+    return run_write(
+        "DELETE FROM sport WHERE SportID = %s",
+        (sport_id,),
+    )
+
+
+def insert_sponsor(company, sponsor_type, contact_information):
+    return run_write(
+        """
+        INSERT INTO sponsor (Company, SponsorType, ContactInformation)
+        VALUES (%s, %s, %s)
+        """,
+        (company, sponsor_type, contact_information),
+    )
+
+
+def update_sponsor(sponsor_id, company, sponsor_type, contact_information):
+    return run_write(
+        """
+        UPDATE sponsor
+        SET Company = %s, SponsorType = %s, ContactInformation = %s
+        WHERE SponsorID = %s
+        """,
+        (company, sponsor_type, contact_information, sponsor_id),
+    )
+
+
+def delete_sponsor(sponsor_id):
+    return run_write(
+        "DELETE FROM sponsor WHERE SponsorID = %s",
+        (sponsor_id,),
+    )
+
+
+def insert_eligible_redemption(athlete_id, reward_id):
+    return run_write(
+        """
+        INSERT INTO reward_redemption
+            (AthleteID, RewardID, RedemptionDate, Status)
+        SELECT %s, r.RewardID, CURDATE(), 'Pending'
+        FROM reward r
+        WHERE r.RewardID = %s
+          AND r.Availability > 0
+          AND r.ExpirationDate >= CURDATE()
+          AND r.PointsRequired <= COALESCE(
+              (SELECT SUM(ap.PointsEarned)
+               FROM activity_point ap
+               WHERE ap.AthleteID = %s),
+              0
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM athlete a
+              WHERE a.AthleteID = %s
+          )
+        """,
+        (athlete_id, reward_id, athlete_id, athlete_id),
     )
