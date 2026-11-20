@@ -3,6 +3,7 @@ import mysql.connector
 from database import (
     get_all_athletes, get_athlete_by_id, insert_athlete, update_athlete, delete_athlete,
 )
+from delete_summary import describe_related
 
 SKILL_LEVELS = ["Beginner", "Intermediate", "Advanced"]
 
@@ -75,8 +76,11 @@ def add_athlete(name, username, email, location, skill_level):
         if e.errno == 1062:  # duplicate value in a UNIQUE column
             return False, "That username or email is already taken."
         return False, f"Could not add athlete: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not add athlete: {e.msg}"
 
-    return True, f"Added athlete {name}."
+    return True, f'Added athlete "{name}".'
+
 
 
 def edit_athlete(athlete_id, name, username, email, location, skill_level):
@@ -93,22 +97,30 @@ def edit_athlete(athlete_id, name, username, email, location, skill_level):
         if e.errno == 1062:  # duplicate value in a UNIQUE column
             return False, "That username or email is already taken."
         return False, f"Could not update athlete: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not update athlete: {e.msg}"
 
     if updated == 0:
         return False, "No matching athlete found."
-    return True, f"Updated athlete {name}."
+    return True, f'Updated athlete "{name}".'
 
 
 def remove_athlete(athlete_id):
-    """Delete the athlete. Returns (success, message)."""
+    """Delete the athlete together with every record that references
+    them (see delete_athlete), in one transaction.
+    Returns (success, message)."""
     try:
         deleted = delete_athlete(athlete_id)
     except mysql.connector.IntegrityError as e:
-        if e.errno == 1451:  # other rows still point at this athlete
-            return False, ("Cannot delete this athlete while they still have "
-                           "achievements or activities.")
+        # The chain deletes the dependent records itself, so 1451 now
+        # only means a table we did not account for points at athletes.
+        if e.errno == 1451:
+            return False, ("Cannot delete this athlete: another record "
+                           "still refers to them.")
+        return False, f"Could not delete athlete: {e.msg}"
+    except mysql.connector.Error as e:
         return False, f"Could not delete athlete: {e.msg}"
 
-    if deleted == 0:
+    if deleted["athlete"] == 0:
         return False, "No matching athlete found."
-    return True, "Deleted athlete."
+    return True, "Deleted athlete." + describe_related(deleted, "athlete")
