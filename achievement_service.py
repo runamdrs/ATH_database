@@ -4,6 +4,7 @@ from database import (
     get_all_achievements, get_all_sports, get_achievement_by_id,
     insert_achievement, update_achievement, delete_achievement,
 )
+from delete_summary import describe_related
 
 
 def search_achievements(search, date_earned):
@@ -75,6 +76,8 @@ def add_achievement(athlete_id, sport_id, title, description, date_earned):
         if e.errno == 1452:  # foreign key violation
             return False, "That athlete or sport no longer exists."
         return False, f"Could not add achievement: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not add achievement: {e.msg}"
 
     return True, f'Added achievement "{title}".'
 
@@ -93,6 +96,8 @@ def edit_achievement(achievement_id, athlete_id, sport_id, title, description,
         if e.errno == 1452:  # foreign key violation
             return False, "That athlete or sport no longer exists."
         return False, f"Could not update achievement: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not update achievement: {e.msg}"
 
     if updated == 0:
         return False, "No matching achievement found."
@@ -107,7 +112,9 @@ def remove_achievement(achievement_id):
         if e.errno == 1451:  # other rows still point at this achievement
             return False, "Cannot delete this achievement while other records still use it."
         return False, f"Could not delete achievement: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not delete achievement: {e.msg}"
 
-    if deleted == 0:
+    if deleted["achievement"] == 0:
         return False, "No matching achievement found."
-    return True, "Deleted achievement."
+    return True, "Deleted achievement." + describe_related(deleted, "achievement")

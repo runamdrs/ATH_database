@@ -6,6 +6,7 @@ from database import (
     get_all_activities, get_activity_by_id,
     insert_activity, update_activity, delete_activity,
 )
+from delete_summary import describe_related
 
 
 def search_activities(search, sport):
@@ -88,6 +89,8 @@ def add_activity(athlete_id, sport_id, activity_type, date, time, duration,
         if e.errno == 1452:  # foreign key violation
             return False, "That athlete or sport no longer exists."
         return False, f"Could not add activity: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not add activity: {e.msg}"
 
     return True, f'Added activity "{activity_type}".'
 
@@ -108,6 +111,8 @@ def edit_activity(activity_id, athlete_id, sport_id, activity_type, date, time,
         if e.errno == 1452:  # foreign key violation
             return False, "That athlete or sport no longer exists."
         return False, f"Could not update activity: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not update activity: {e.msg}"
 
     if updated == 0:
         return False, "No matching activity found."
@@ -115,14 +120,17 @@ def edit_activity(activity_id, athlete_id, sport_id, activity_type, date, time,
 
 
 def remove_activity(activity_id):
-    """Delete the activity. Returns (success, message)."""
+    """Delete the activity together with its points and participation
+    entries, in one transaction. Returns (success, message)."""
     try:
         deleted = delete_activity(activity_id)
     except mysql.connector.IntegrityError as e:
-        if e.errno == 1451:  # other rows still point at this activity
+        if e.errno == 1451:  # a table we did not account for points at it
             return False, "Cannot delete this activity while other records still use it."
         return False, f"Could not delete activity: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not delete activity: {e.msg}"
 
-    if deleted == 0:
+    if deleted["activity"] == 0:
         return False, "No matching activity found."
-    return True, "Deleted activity."
+    return True, "Deleted activity." + describe_related(deleted, "activity")
