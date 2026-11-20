@@ -7,11 +7,21 @@ from achievement_service import (
     search_achievements, get_dates_earned, add_achievement,
 )
 from activity_service import search_activities, get_activity_sports, add_activity
-from workout_service import list_workouts, add_workout, edit_workout, remove_workout
-from sport_service import list_sports, get_sport_options, add_sport, edit_sport, remove_sport
-from sponsor_service import list_sponsors, add_sponsor, edit_sponsor, remove_sponsor
+from workout_service import (
+    search_workouts, get_workout_athletes,
+    get_workout_statuses, add_workout, edit_workout, remove_workout,
+)
+from sport_service import (
+    get_sport_options, get_sport_types, search_sports,
+    add_sport, edit_sport, remove_sport,
+)
+from sponsor_service import (
+    get_sponsor_types, search_sponsors,
+    add_sponsor, edit_sponsor, remove_sponsor,
+)
 from reward_redemption_service import (
-    list_redemptions, list_rewards_for_athlete, redeem_reward,
+    search_redemptions, get_redemption_statuses,
+    get_redemption_sponsors, list_rewards_for_athlete, redeem_reward,
 )
 
 st.title("ATH")
@@ -30,6 +40,21 @@ def show_result(success, message):
         st.rerun()
     else:
         st.error(message)
+
+
+@st.dialog("Confirm deletion", dismissible=False)
+def confirm_delete_dialog(record_type, description, record_id, delete_record):
+    st.warning(
+        f'Are you sure you want to delete **{description}** '
+        f'({record_type} ID {record_id})?'
+    )
+    cancel_col, delete_col = st.columns(2)
+    with cancel_col:
+        if st.button("Cancel", width="stretch"):
+            st.rerun()
+    with delete_col:
+        if st.button(f"Yes, delete {record_type.lower()}", type="primary"):
+            show_result(*delete_record(record_id))
 
 
 section = st.sidebar.radio(
@@ -150,8 +175,16 @@ elif section == "Activities":
 elif section == "Workouts":
     st.header("Workouts")
 
-    workouts = list_workouts()
-    st.dataframe(workouts)
+    search = st.text_input("Search by athlete, workout, or notes")
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        athlete_filter = st.selectbox("Athlete", get_workout_athletes())
+    with filter_col2:
+        status_filter = st.selectbox("Completion status", get_workout_statuses())
+
+    workouts = search_workouts(search, athlete_filter, status_filter)
+    st.dataframe(workouts, width="stretch")
+    st.write(f"{len(workouts)} workout(s) found.")
 
     athlete_options = get_athlete_options()
     if not athlete_options:
@@ -235,24 +268,41 @@ elif section == "Workouts":
                 edit_training_notes,
             ))
 
-        st.subheader("Delete Workout")
-        with st.form("delete_workout"):
-            confirm_delete = st.checkbox(
-                "I understand this workout will be deleted if no records depend on it."
+        st.subheader("Delete a Workout")
+        delete_workout_id = st.selectbox(
+            "Choose the exact workout to delete",
+            options=list(workout_options),
+            format_func=lambda value: (
+                f'{workout_options[value]} — Workout ID {value}'
+            ),
+            key="delete_workout_selection",
+        )
+        delete_workout = next(
+            row for row in workouts if row["WorkoutID"] == delete_workout_id
+        )
+        workout_description = (
+            f'{delete_workout["WorkoutType"]} for '
+            f'{delete_workout["Athlete"]} on '
+            f'{delete_workout["ScheduledDate"]}'
+        )
+        st.warning(
+            f'Exact record selected: **{workout_description}** '
+            f'(Workout ID {delete_workout_id}).'
+        )
+        if st.button("Delete selected workout", key="delete_workout_button"):
+            confirm_delete_dialog(
+                "Workout", workout_description, delete_workout_id,
+                remove_workout,
             )
-            submitted = st.form_submit_button("Delete Workout")
-
-        if submitted:
-            if confirm_delete:
-                show_result(*remove_workout(selected_workout_id))
-            else:
-                st.error("Confirm the deletion before continuing.")
 
 elif section == "Sports":
     st.header("Sports")
 
-    sports = list_sports()
-    st.dataframe(sports)
+    search = st.text_input("Search by sport name or type")
+    sport_type = st.selectbox("Sport type", get_sport_types())
+    sports = search_sports(search, sport_type)
+    st.dataframe(sports, width="stretch")
+    st.write(f"{len(sports)} sport(s) found.")
 
     st.subheader("Add a Sport")
     with st.form("add_sport"):
@@ -264,7 +314,9 @@ elif section == "Sports":
         show_result(*add_sport(name, sport_type))
 
     if sports:
-        sport_options = get_sport_options()
+        sport_options = {
+            row["SportID"]: row["Name"] for row in sports
+        }
         selected_sport_id = st.selectbox(
             "Select a sport to edit or delete",
             options=list(sport_options),
@@ -283,24 +335,35 @@ elif section == "Sports":
         if submitted:
             show_result(*edit_sport(selected_sport_id, edit_name, edit_type))
 
-        st.subheader("Delete Sport")
-        with st.form("delete_sport"):
-            confirm_delete = st.checkbox(
-                "I understand this sport can only be deleted if it is not in use."
+        st.subheader("Delete a Sport")
+        delete_sport_id = st.selectbox(
+            "Choose the exact sport to delete",
+            options=list(sport_options),
+            format_func=lambda value: (
+                f'{sport_options[value]} — Sport ID {value}'
+            ),
+            key="delete_sport_selection",
+        )
+        delete_sport = next(
+            row for row in sports if row["SportID"] == delete_sport_id
+        )
+        st.warning(
+            f'Exact record selected: **{delete_sport["Name"]}** '
+            f'(Sport ID {delete_sport_id}, Type: {delete_sport["Type"]}).'
+        )
+        if st.button("Delete selected sport", key="delete_sport_button"):
+            confirm_delete_dialog(
+                "Sport", delete_sport["Name"], delete_sport_id, remove_sport,
             )
-            submitted = st.form_submit_button("Delete Sport")
-
-        if submitted:
-            if confirm_delete:
-                show_result(*remove_sport(selected_sport_id))
-            else:
-                st.error("Confirm the deletion before continuing.")
 
 elif section == "Sponsors":
     st.header("Sponsors")
 
-    sponsors = list_sponsors()
-    st.dataframe(sponsors)
+    search = st.text_input("Search by company, type, or contact")
+    sponsor_type = st.selectbox("Sponsor type", get_sponsor_types())
+    sponsors = search_sponsors(search, sponsor_type)
+    st.dataframe(sponsors, width="stretch")
+    st.write(f"{len(sponsors)} sponsor(s) found.")
 
     st.subheader("Add a Sponsor")
     with st.form("add_sponsor"):
@@ -346,24 +409,42 @@ elif section == "Sponsors":
                 edit_contact_information,
             ))
 
-        st.subheader("Delete Sponsor")
-        with st.form("delete_sponsor"):
-            confirm_delete = st.checkbox(
-                "I understand this sponsor can only be deleted if no rewards depend on it."
+        st.subheader("Delete a Sponsor")
+        delete_sponsor_id = st.selectbox(
+            "Choose the exact sponsor to delete",
+            options=list(sponsor_options),
+            format_func=lambda value: (
+                f'{sponsor_options[value]} — Sponsor ID {value}'
+            ),
+            key="delete_sponsor_selection",
+        )
+        delete_sponsor = next(
+            row for row in sponsors if row["SponsorID"] == delete_sponsor_id
+        )
+        sponsor_description = delete_sponsor["Company"]
+        st.warning(
+            f'You are about to delete **{sponsor_description}** '
+            f'(Sponsor ID {delete_sponsor_id}).'
+        )
+        if st.button("Delete selected sponsor", key="delete_sponsor_button"):
+            confirm_delete_dialog(
+                "Sponsor", sponsor_description, delete_sponsor_id,
+                remove_sponsor,
             )
-            submitted = st.form_submit_button("Delete Sponsor")
-
-        if submitted:
-            if confirm_delete:
-                show_result(*remove_sponsor(selected_sponsor_id))
-            else:
-                st.error("Confirm the deletion before continuing.")
 
 elif section == "Reward Redemptions":
     st.header("Reward Redemptions")
 
-    redemptions = list_redemptions()
-    st.dataframe(redemptions)
+    search = st.text_input("Search by athlete, reward, sponsor, or status")
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        status_filter = st.selectbox("Status", get_redemption_statuses())
+    with filter_col2:
+        sponsor_filter = st.selectbox("Sponsor", get_redemption_sponsors())
+
+    redemptions = search_redemptions(search, status_filter, sponsor_filter)
+    st.dataframe(redemptions, width="stretch")
+    st.write(f"{len(redemptions)} redemption(s) found.")
 
     athlete_options = get_athlete_options()
     if not athlete_options:

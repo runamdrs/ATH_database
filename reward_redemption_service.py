@@ -15,6 +15,33 @@ def list_rewards_for_athlete(athlete_id):
     return get_rewards_for_athlete(athlete_id)
 
 
+def get_redemption_statuses():
+    statuses = {row["Status"] for row in get_all_redemptions()}
+    return ["All"] + sorted(statuses)
+
+
+def get_redemption_sponsors():
+    sponsors = {row["Sponsor"] for row in get_all_redemptions()}
+    return ["All"] + sorted(sponsors)
+
+
+def search_redemptions(search="", status="All", sponsor="All"):
+    search = (search or "").lower()
+    results = []
+    for row in get_all_redemptions():
+        searchable_text = " ".join([
+            str(row["Athlete"] or ""),
+            str(row["Reward"] or ""),
+            str(row["Sponsor"] or ""),
+            str(row["Status"] or ""),
+        ]).lower()
+        status_matches = status == "All" or row["Status"] == status
+        sponsor_matches = sponsor == "All" or row["Sponsor"] == sponsor
+        if search in searchable_text and status_matches and sponsor_matches:
+            results.append(row)
+    return results
+
+
 def redeem_reward(athlete_id, reward_id):
     if not athlete_id:
         return False, "Please choose an athlete."
