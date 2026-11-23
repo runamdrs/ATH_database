@@ -27,6 +27,11 @@ from services.sponsor_service import (
     list_sponsors, get_sponsor_options, get_sponsor_details,
     add_sponsor, edit_sponsor, remove_sponsor,
 )
+from services.recruiter_interest_service import (
+    list_interest_for_athlete, get_recruiter_options, get_interest_options,
+    get_interest_details, express_interest, edit_interest, remove_interest,
+    INTEREST_STATUSES,
+)
 from services.post_service import (
     list_posts, get_post_options, list_comments, add_post,
     get_comment_options, get_comment_details,
@@ -171,6 +176,84 @@ def main():
                     st.warning("Please confirm deletion.")
                 else:
                     show_result(*remove_athlete(athlete_id))
+
+        st.subheader("Recruiter Interest")
+        recruiter_options = get_recruiter_options()   # {RecruiterID: "Name (Org)"}
+
+        if not athlete_options or not recruiter_options:
+            st.info("Recruiter interest needs at least one athlete and one recruiter.")
+        else:
+            # Outside the forms so the list and both forms follow the athlete.
+            interest_athlete_id = st.selectbox(
+                "Athlete",
+                options=list(athlete_options),
+                format_func=lambda athlete_id: athlete_options[athlete_id],
+                key="interest_athlete_id",
+            )
+            st.dataframe(list_interest_for_athlete(interest_athlete_id))
+
+            # A new interest always starts as "Interested", dated today, so
+            # only the recruiter and the notes are asked for.
+            with st.form("express_interest"):
+                recruiter_id = st.selectbox(
+                    "Recruiter",
+                    options=list(recruiter_options),
+                    format_func=lambda recruiter_id: recruiter_options[recruiter_id],
+                )
+                notes = st.text_area("Notes (optional)")
+                submitted = st.form_submit_button("Express Interest")
+
+            if submitted:
+                show_result(*express_interest(recruiter_id, interest_athlete_id, notes))
+
+            st.subheader("Manage Recruiter Interest")
+            # The radio sits outside the form so the form re-renders when it changes.
+            mode = st.radio("Action", ["Update", "Delete"], horizontal=True,
+                            key="interest_mode")
+            interest_options = get_interest_options(interest_athlete_id)
+
+            if not interest_options:
+                st.info("No recruiter has shown interest in this athlete yet.")
+            else:
+                interest_recruiter_id = st.selectbox(
+                    "Recruiter",
+                    options=list(interest_options),
+                    format_func=lambda recruiter_id: interest_options[recruiter_id],
+                    key="manage_interest_recruiter_id",
+                )
+                current = get_interest_details(interest_recruiter_id, interest_athlete_id)
+
+                with st.form("manage_interest"):
+                    if mode == "Update":
+                        # Both IDs in the key give every interest fresh, pre-filled widgets.
+                        widget_id = f"{interest_recruiter_id}_{interest_athlete_id}"
+                        new_status = st.selectbox(
+                            "Status",
+                            INTEREST_STATUSES,
+                            index=INTEREST_STATUSES.index(current["Status"])
+                            if current["Status"] in INTEREST_STATUSES else 0,
+                            key=f"interest_status_{widget_id}",
+                        )
+                        new_notes = st.text_area("Notes (optional)",
+                                                 value=current["Notes"] or "",
+                                                 key=f"interest_notes_{widget_id}")
+                    else:
+                        # No table references recruiter_athlete, so nothing else goes.
+                        confirm = st.checkbox("Confirm deletion")
+                    submitted = st.form_submit_button(mode)
+
+                if submitted:
+                    if mode == "Update":
+                        show_result(*edit_interest(
+                            interest_recruiter_id, interest_athlete_id,
+                            new_status, new_notes,
+                        ))
+                    elif not confirm:
+                        st.warning("Please confirm deletion.")
+                    else:
+                        show_result(*remove_interest(
+                            interest_recruiter_id, interest_athlete_id,
+                        ))
 
     elif section == "Achievements":
         st.header("Browse Achievements")

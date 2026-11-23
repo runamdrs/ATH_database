@@ -13,6 +13,7 @@ from services import athlete_service
 from services import delete_summary
 from services import point_service
 from services import post_service
+from services import recruiter_interest_service
 from services import reward_redemption_service
 from services import sponsor_service
 from services import sport_service
@@ -511,6 +512,47 @@ class ActivityParticipantTests(unittest.TestCase):
             )
 
 
+class RecruiterInterestTests(unittest.TestCase):
+    def test_new_interest_starts_as_interested_with_cleaned_notes(self):
+        with patch("services.recruiter_interest_service.insert_recruiter_interest") \
+                as insert_interest:
+            result = recruiter_interest_service.express_interest(2, 7, "   ")
+        self.assertEqual(result, (True, "Added recruiter interest."))
+        # Blank notes are stored as NULL; the date is CURDATE() in the SQL.
+        insert_interest.assert_called_once_with(2, 7, "Interested", None)
+
+    def test_second_interest_from_the_same_recruiter_is_reported(self):
+        duplicate = mysql.connector.IntegrityError(msg="dup", errno=1062)
+        with patch("services.recruiter_interest_service.insert_recruiter_interest",
+                   side_effect=duplicate):
+            result = recruiter_interest_service.express_interest(2, 7, "")
+        self.assertEqual(
+            result,
+            (False, "That recruiter has already shown interest in this athlete."),
+        )
+
+    def test_status_must_be_one_of_the_known_values(self):
+        self.assertEqual(
+            recruiter_interest_service.edit_interest(2, 7, "Hired", ""),
+            (False, "Please choose a valid status."),
+        )
+        with patch("services.recruiter_interest_service.update_recruiter_interest",
+                   return_value=0):
+            self.assertEqual(
+                recruiter_interest_service.edit_interest(2, 7, "Contacted", ""),
+                (False, "No matching recruiter interest found."),
+            )
+
+    def test_withdrawing_interest_is_one_bound_statement(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            deleted = database.delete_recruiter_interest(2, 7)
+        self.assertEqual(connection.tables(), ["recruiter_athlete"])
+        self.assertEqual(connection.statements[0][1], (2, 7))
+        self.assertTrue(connection.committed)
+        self.assertEqual(deleted, {"recruiter_athlete": 1})
+
+
 class PointTests(unittest.TestCase):
     def test_point_validation_and_insert(self):
         today = datetime.date(2026, 11, 23)
@@ -608,6 +650,15 @@ class StreamlitPageTests(unittest.TestCase):
             "MediaURL": None,
             "Comments": 1,
         }
+        recruiter = {
+            "RecruiterID": 1, "Name": "Sam Scout", "Organization": None,
+            "Email": "sam@example.com",
+        }
+        interest = {
+            "RecruiterID": 1, "AthleteID": 1, "Recruiter": "Sam Scout",
+            "Organization": None, "InterestDate": datetime.date(2026, 11, 20),
+            "Status": "Contacted", "Notes": None,
+        }
         comment = {
             "CommentID": 1, "AthleteID": 1, "PostID": 1, "Athlete": "Test Athlete",
             "Text": "Nice!", "DateCreated": datetime.datetime(2026, 11, 16, 10, 0),
@@ -655,6 +706,12 @@ class StreamlitPageTests(unittest.TestCase):
             patch("services.athlete_service.get_athlete_by_id", return_value=athlete),
             patch("services.athlete_service.get_sport_ids_for_athlete", return_value=[1]),
             patch("services.post_service.get_all_posts", return_value=[post]),
+            patch("services.recruiter_interest_service.get_all_recruiters",
+                  return_value=[recruiter]),
+            patch("services.recruiter_interest_service.get_interest_for_athlete",
+                  return_value=[interest]),
+            patch("services.recruiter_interest_service.get_recruiter_interest",
+                  return_value=interest),
             patch("services.post_service.get_comments_for_post", return_value=[comment]),
             patch("services.post_service.get_comment_by_id", return_value=comment),
             # A fresh copy per call, like the database: get_activity_details
@@ -714,7 +771,7 @@ class StreamlitPageTests(unittest.TestCase):
                 ("Athletes", "athlete_mode"), ("Workouts", "workout_mode"),
                 ("Sports", "sport_mode"), ("Sponsors", "sponsor_mode"),
                 ("Points", "point_mode"), ("Posts", "comment_mode"),
-                ("Activities", "participant_mode"),
+                ("Activities", "participant_mode"), ("Athletes", "interest_mode"),
             ):
                 app.sidebar.radio[0].set_value(section).run()
                 app.radio(key=radio_key).set_value("Delete").run()
