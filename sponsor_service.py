@@ -12,6 +12,33 @@ def list_sponsors():
     return get_all_sponsors()
 
 
+def get_sponsor_types():
+    types = {
+        sponsor["SponsorType"]
+        for sponsor in get_all_sponsors()
+        if sponsor["SponsorType"]
+    }
+    return ["All"] + sorted(types)
+
+
+def search_sponsors(search="", sponsor_type="All"):
+    search = (search or "").lower()
+    results = []
+    for sponsor in get_all_sponsors():
+        searchable_text = " ".join([
+            str(sponsor["Company"] or ""),
+            str(sponsor["SponsorType"] or ""),
+            str(sponsor["ContactInformation"] or ""),
+        ]).lower()
+        type_matches = (
+            sponsor_type == "All"
+            or sponsor["SponsorType"] == sponsor_type
+        )
+        if search in searchable_text and type_matches:
+            results.append(sponsor)
+    return results
+
+
 def get_sponsor_options():
     """Map SponsorID -> company for the manage form's dropdown, so users
     pick a sponsor instead of typing an ID."""

@@ -18,6 +18,20 @@ def get_sport_options():
     return {sport["SportID"]: sport["Name"] for sport in get_all_sports()}
 
 
+def get_sport_types():
+    types = {sport["Type"] for sport in get_all_sports()}
+    return ["All"] + sorted(types)
+
+
+def search_sports(search="", sport_type="All"):
+    search = (search or "").lower()
+    return [
+        sport for sport in get_all_sports()
+        if search in f'{sport["Name"]} {sport["Type"]}'.lower()
+        and (sport_type == "All" or sport["Type"] == sport_type)
+    ]
+
+
 def get_sport_details(sport_id):
     """Return one sport's current values (to pre-fill the update form)."""
     return get_sport_by_id(sport_id)

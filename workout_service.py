@@ -12,6 +12,36 @@ def list_workouts():
     return get_all_workouts()
 
 
+def get_workout_athletes():
+    athletes = {row["Athlete"] for row in get_all_workouts()}
+    return ["All"] + sorted(athletes)
+
+
+def get_workout_statuses():
+    statuses = {row["CompletionStatus"] for row in get_all_workouts()}
+    return ["All"] + sorted(statuses)
+
+
+def search_workouts(search="", athlete="All", completion_status="All"):
+    search = (search or "").lower()
+    results = []
+    for row in get_all_workouts():
+        searchable_text = " ".join([
+            str(row["Athlete"] or ""),
+            str(row["WorkoutType"] or ""),
+            str(row["TrainingNotes"] or ""),
+            str(row["CompletionStatus"] or ""),
+        ]).lower()
+        athlete_matches = athlete == "All" or row["Athlete"] == athlete
+        status_matches = (
+            completion_status == "All"
+            or row["CompletionStatus"] == completion_status
+        )
+        if search in searchable_text and athlete_matches and status_matches:
+            results.append(row)
+    return results
+
+
 def get_workout_options():
     """Map WorkoutID -> "2026-11-16 - Run (Alex Morgan)" for the manage
     form's dropdown, so users pick a workout instead of typing an ID."""

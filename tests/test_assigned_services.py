@@ -450,6 +450,15 @@ class StreamlitPageTests(unittest.TestCase):
         with ExitStack() as stack:
             for active_patch in patches:
                 stack.enter_context(active_patch)
+            remove_workout = stack.enter_context(
+                patch("workout_service.remove_workout")
+            )
+            remove_sport = stack.enter_context(
+                patch("sport_service.remove_sport")
+            )
+            remove_sponsor = stack.enter_context(
+                patch("sponsor_service.remove_sponsor")
+            )
 
             # The default 3s timeout is tight on a cold run, where the
             # first script run also imports Streamlit and pandas.
@@ -469,8 +478,8 @@ class StreamlitPageTests(unittest.TestCase):
                     f"{section} page raised an exception",
                 )
 
-            # Every page offers the same Update/Delete choice, and picking
-            # Delete must show a confirmation instead of deleting at once.
+            # Every page offers Update/Delete. The Philipp pages use a
+            # record-specific dialog; cancelling must not call the delete.
             for section, radio_key in (
                 ("Athletes", "athlete_mode"), ("Workouts", "workout_mode"),
                 ("Sports", "sport_mode"), ("Sponsors", "sponsor_mode"),
@@ -481,10 +490,43 @@ class StreamlitPageTests(unittest.TestCase):
                     len(app.exception), 0,
                     f"{section} delete mode raised an exception",
                 )
-                self.assertTrue(
-                    any("Confirm deletion" in box.label for box in app.checkbox),
-                    f"{section} delete mode has no confirmation checkbox",
+                if section == "Athletes":
+                    self.assertTrue(
+                        any(
+                            "Confirm deletion" in box.label
+                            for box in app.checkbox
+                        ),
+                        "Athlete delete mode has no confirmation checkbox",
+                    )
+                    continue
+
+                delete_button = {
+                    "Workouts": "delete_workout_button",
+                    "Sports": "delete_sport_button",
+                    "Sponsors": "delete_sponsor_button",
+                }[section]
+                app.button(key=delete_button).click().run()
+                self.assertEqual(
+                    len(app.exception), 0,
+                    f"{section} delete confirmation did not open",
                 )
+                dialog_buttons = [button.label for button in app.button]
+                self.assertIn("Cancel", dialog_buttons)
+                self.assertIn(
+                    f"Yes, delete {section[:-1].lower()}", dialog_buttons,
+                )
+                next(
+                    button for button in app.button
+                    if button.label == "Cancel"
+                ).click().run()
+                self.assertEqual(
+                    len(app.exception), 0,
+                    f"{section} delete cancellation raised an exception",
+                )
+
+            remove_workout.assert_not_called()
+            remove_sport.assert_not_called()
+            remove_sponsor.assert_not_called()
 
 
 if __name__ == "__main__":
