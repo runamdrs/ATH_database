@@ -1,4 +1,5 @@
 import datetime
+from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -6,7 +7,9 @@ from unittest.mock import patch
 import mysql.connector
 from streamlit.testing.v1 import AppTest
 
+import athlete_service
 import database
+import delete_summary
 import reward_redemption_service
 import sponsor_service
 import sport_service
@@ -248,6 +251,146 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(connection.closed)
 
 
+class RecordingConnection:
+    """Stands in for a MySQL connection and remembers every statement,
+    so the tests can check what ran, in which order, and whether the
+    transaction was committed or rolled back."""
+
+    def __init__(self, fail_on=None, rowcount=1):
+        self.statements = []
+        self.committed = False
+        self.rolled_back = False
+        self.closed = False
+        self.fail_on = fail_on
+        self.rowcount = rowcount
+        connection = self
+
+        class RecordingCursor:
+            rowcount = 0
+            closed = False
+
+            def execute(self, query, params):
+                connection.statements.append((query, params))
+                if connection.fail_on and connection.fail_on in query:
+                    raise mysql.connector.Error("statement failed")
+                self.rowcount = connection.rowcount
+
+            def close(self):
+                self.closed = True
+
+        self.fake_cursor = RecordingCursor()
+
+    def cursor(self, dictionary=False):
+        return self.fake_cursor
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+    def tables(self):
+        """The table each recorded DELETE targeted, in order."""
+        return [
+            query.split("DELETE FROM", 1)[1].split()[0]
+            for query, _ in self.statements
+            if "DELETE FROM" in query
+        ]
+
+
+class CascadingDeleteTests(unittest.TestCase):
+    def test_deleting_an_athlete_removes_children_first_in_one_transaction(self):
+        connection = RecordingConnection()
+        with patch("database.get_connection", return_value=connection):
+            deleted = database.delete_athlete(7)
+
+        tables = connection.tables()
+        # The athlete goes last, after everything that references them.
+        self.assertEqual(tables[-1], "athlete")
+        for child in ("activity_point", "activity_participant", "comment",
+                      "post", "activity", "workout", "achievement",
+                      "athlete_sport", "recruiter_athlete", "reward_redemption"):
+            self.assertIn(child, tables)
+            self.assertLess(tables.index(child), tables.index("athlete"),
+                            f"{child} must be deleted before the athlete")
+        # activity_point references activities and workouts, so it has to
+        # go before both of them.
+        self.assertLess(tables.index("activity_point"), tables.index("activity"))
+        self.assertLess(tables.index("activity_point"), tables.index("workout"))
+        self.assertLess(tables.index("comment"), tables.index("post"))
+
+        # One transaction for the whole chain, and every value is bound.
+        self.assertTrue(connection.committed)
+        self.assertFalse(connection.rolled_back)
+        self.assertTrue(connection.closed)
+        self.assertTrue(connection.fake_cursor.closed)
+        for query, params in connection.statements:
+            self.assertIn("%s", query)
+            self.assertTrue(all(value == 7 for value in params))
+        self.assertEqual(deleted["athlete"], 1)
+
+    def test_failed_child_delete_rolls_the_whole_chain_back(self):
+        # The athlete's own DELETE fails, so the child deletes that
+        # already ran must not be committed.
+        connection = RecordingConnection(fail_on="DELETE FROM athlete WHERE")
+        with patch("database.get_connection", return_value=connection):
+            with self.assertRaises(mysql.connector.Error):
+                database.delete_athlete(7)
+
+        self.assertFalse(connection.committed)
+        self.assertTrue(connection.rolled_back)
+        self.assertTrue(connection.closed)
+        self.assertTrue(connection.fake_cursor.closed)
+
+    def test_activity_and_sponsor_deletes_clear_their_dependents(self):
+        connection = RecordingConnection()
+        with patch("database.get_connection", return_value=connection):
+            database.delete_activity(3)
+        self.assertEqual(
+            connection.tables(),
+            ["activity_point", "activity_participant", "activity"],
+        )
+
+        connection = RecordingConnection()
+        with patch("database.get_connection", return_value=connection):
+            database.delete_sponsor(5)
+        self.assertEqual(
+            connection.tables(), ["reward_redemption", "reward", "sponsor"]
+        )
+
+    def test_missing_athlete_is_reported_instead_of_a_success(self):
+        counts = {"activity": 0, "workout": 0, "athlete": 0}
+        with patch("athlete_service.delete_athlete", return_value=counts):
+            result = athlete_service.remove_athlete(999)
+
+        self.assertEqual(result, (False, "No matching athlete found."))
+
+    def test_success_message_lists_what_else_was_deleted(self):
+        counts = {
+            "activity_point": 4, "activity_participant": 0, "comment": 1,
+            "post": 0, "activity": 2, "workout": 0, "achievement": 0,
+            "athlete_sport": 0, "recruiter_athlete": 0,
+            "reward_redemption": 0, "athlete": 1,
+        }
+        with patch("athlete_service.delete_athlete", return_value=counts):
+            success, message = athlete_service.remove_athlete(7)
+
+        self.assertTrue(success)
+        self.assertEqual(
+            message,
+            "Deleted athlete. Also deleted 4 points records, 1 comment "
+            "and 2 activities.",
+        )
+
+    def test_no_dependents_means_no_extra_sentence(self):
+        self.assertEqual(
+            delete_summary.describe_related({"achievement": 1}, "achievement"), ""
+        )
+
+
 class StreamlitPageTests(unittest.TestCase):
     def test_all_navigation_pages_render_without_database(self):
         athlete = {
@@ -287,12 +430,16 @@ class StreamlitPageTests(unittest.TestCase):
         }
         patches = [
             patch("athlete_service.get_all_athletes", return_value=[athlete]),
+            patch("athlete_service.get_athlete_by_id", return_value=athlete),
             patch("achievement_service.get_all_achievements", return_value=[]),
             patch("achievement_service.get_all_sports", return_value=[sport]),
             patch("activity_service.get_all_activities", return_value=[]),
             patch("workout_service.get_all_workouts", return_value=[workout]),
+            patch("workout_service.get_workout_by_id", return_value=workout),
             patch("sport_service.get_all_sports", return_value=[sport]),
+            patch("sport_service.get_sport_by_id", return_value=sport),
             patch("sponsor_service.get_all_sponsors", return_value=[sponsor]),
+            patch("sponsor_service.get_sponsor_by_id", return_value=sponsor),
             patch("reward_redemption_service.get_all_redemptions", return_value=[]),
             patch(
                 "reward_redemption_service.get_rewards_for_athlete",
@@ -300,10 +447,24 @@ class StreamlitPageTests(unittest.TestCase):
             ),
         ]
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patches[5], patches[6], patches[7], patches[8]:
+        with ExitStack() as stack:
+            for active_patch in patches:
+                stack.enter_context(active_patch)
+            remove_workout = stack.enter_context(
+                patch("workout_service.remove_workout")
+            )
+            remove_sport = stack.enter_context(
+                patch("sport_service.remove_sport")
+            )
+            remove_sponsor = stack.enter_context(
+                patch("sponsor_service.remove_sponsor")
+            )
+
+            # The default 3s timeout is tight on a cold run, where the
+            # first script run also imports Streamlit and pandas.
             app = AppTest.from_file(
-                str(Path(__file__).resolve().parents[1] / "app.py")
+                str(Path(__file__).resolve().parents[1] / "app.py"),
+                default_timeout=30,
             ).run()
             self.assertEqual(len(app.exception), 0)
 
@@ -316,6 +477,56 @@ class StreamlitPageTests(unittest.TestCase):
                     len(app.exception), 0,
                     f"{section} page raised an exception",
                 )
+
+            # Every page offers Update/Delete. The Philipp pages use a
+            # record-specific dialog; cancelling must not call the delete.
+            for section, radio_key in (
+                ("Athletes", "athlete_mode"), ("Workouts", "workout_mode"),
+                ("Sports", "sport_mode"), ("Sponsors", "sponsor_mode"),
+            ):
+                app.sidebar.radio[0].set_value(section).run()
+                app.radio(key=radio_key).set_value("Delete").run()
+                self.assertEqual(
+                    len(app.exception), 0,
+                    f"{section} delete mode raised an exception",
+                )
+                if section == "Athletes":
+                    self.assertTrue(
+                        any(
+                            "Confirm deletion" in box.label
+                            for box in app.checkbox
+                        ),
+                        "Athlete delete mode has no confirmation checkbox",
+                    )
+                    continue
+
+                delete_button = {
+                    "Workouts": "delete_workout_button",
+                    "Sports": "delete_sport_button",
+                    "Sponsors": "delete_sponsor_button",
+                }[section]
+                app.button(key=delete_button).click().run()
+                self.assertEqual(
+                    len(app.exception), 0,
+                    f"{section} delete confirmation did not open",
+                )
+                dialog_buttons = [button.label for button in app.button]
+                self.assertIn("Cancel", dialog_buttons)
+                self.assertIn(
+                    f"Yes, delete {section[:-1].lower()}", dialog_buttons,
+                )
+                next(
+                    button for button in app.button
+                    if button.label == "Cancel"
+                ).click().run()
+                self.assertEqual(
+                    len(app.exception), 0,
+                    f"{section} delete cancellation raised an exception",
+                )
+
+            remove_workout.assert_not_called()
+            remove_sport.assert_not_called()
+            remove_sponsor.assert_not_called()
 
 
 if __name__ == "__main__":
