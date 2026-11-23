@@ -7,18 +7,18 @@ from unittest.mock import patch
 import mysql.connector
 from streamlit.testing.v1 import AppTest
 
-import athlete_service
-import database
-import delete_summary
-import reward_redemption_service
-import sponsor_service
-import sport_service
-import workout_service
+from db import database
+from services import athlete_service
+from services import delete_summary
+from services import reward_redemption_service
+from services import sponsor_service
+from services import sport_service
+from services import workout_service
 
 
 class ServiceTests(unittest.TestCase):
     def test_workout_validation_and_insert(self):
-        with patch("workout_service.insert_workout") as insert:
+        with patch("services.workout_service.insert_workout") as insert:
             result = workout_service.add_workout(
                 7, datetime.date(2026, 11, 16), "  Run  ", 30,
                 "Scheduled", "  intervals  ",
@@ -31,7 +31,7 @@ class ServiceTests(unittest.TestCase):
         )
 
     def test_workout_rejects_invalid_duration_without_writing(self):
-        with patch("workout_service.insert_workout") as insert:
+        with patch("services.workout_service.insert_workout") as insert:
             result = workout_service.add_workout(
                 7, datetime.date(2026, 11, 16), "Run", 0, "Scheduled", "",
             )
@@ -42,8 +42,11 @@ class ServiceTests(unittest.TestCase):
 
     def test_workout_update_and_delete_respect_foreign_keys(self):
         workout = {"WorkoutID": 3}
-        with patch("workout_service.get_all_workouts", return_value=[workout]), \
-                patch("workout_service.update_workout", return_value=1) as update:
+        with patch(
+            "services.workout_service.get_all_workouts", return_value=[workout]
+        ), patch(
+            "services.workout_service.update_workout", return_value=1
+        ) as update:
             result = workout_service.edit_workout(
                 3, 7, datetime.date(2026, 11, 16), "Run", None,
                 "Completed", "",
@@ -55,8 +58,11 @@ class ServiceTests(unittest.TestCase):
         delete_error = mysql.connector.IntegrityError(
             "Referenced workout", errno=1451,
         )
-        with patch("workout_service.get_all_workouts", return_value=[workout]), \
-                patch("workout_service.delete_workout", side_effect=delete_error):
+        with patch(
+            "services.workout_service.get_all_workouts", return_value=[workout]
+        ), patch(
+            "services.workout_service.delete_workout", side_effect=delete_error
+        ):
             result = workout_service.remove_workout(3)
 
         self.assertFalse(result[0])
@@ -66,7 +72,7 @@ class ServiceTests(unittest.TestCase):
         duplicate_error = mysql.connector.IntegrityError(
             "Duplicate sport", errno=1062,
         )
-        with patch("sport_service.insert_sport", side_effect=duplicate_error):
+        with patch("services.sport_service.insert_sport", side_effect=duplicate_error):
             result = sport_service.add_sport("Soccer", "Team")
 
         self.assertEqual(
@@ -75,7 +81,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_sport_options_use_real_sport_ids(self):
         with patch(
-            "sport_service.get_all_sports",
+            "services.sport_service.get_all_sports",
             return_value=[{"SportID": 3, "Name": "Soccer", "Type": "Team"}],
         ):
             result = sport_service.get_sport_options()
@@ -84,8 +90,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_sport_edit_and_delete_handle_relationships(self):
         sport = {"SportID": 3, "Name": "Soccer", "Type": "Team"}
-        with patch("sport_service.get_all_sports", return_value=[sport]), \
-                patch("sport_service.update_sport", return_value=1) as update:
+        with patch("services.sport_service.get_all_sports", return_value=[sport]), \
+                patch("services.sport_service.update_sport", return_value=1) as update:
             result = sport_service.edit_sport(3, "Football", "Team")
 
         self.assertTrue(result[0])
@@ -94,8 +100,8 @@ class ServiceTests(unittest.TestCase):
         delete_error = mysql.connector.IntegrityError(
             "Referenced sport", errno=1451,
         )
-        with patch("sport_service.get_all_sports", return_value=[sport]), \
-                patch("sport_service.delete_sport", side_effect=delete_error):
+        with patch("services.sport_service.get_all_sports", return_value=[sport]), \
+                patch("services.sport_service.delete_sport", side_effect=delete_error):
             result = sport_service.remove_sport(3)
 
         self.assertFalse(result[0])
@@ -103,14 +109,14 @@ class ServiceTests(unittest.TestCase):
 
     def test_sponsor_duplicate_company_is_reported(self):
         with patch(
-            "sponsor_service.get_all_sponsors",
+            "services.sponsor_service.get_all_sponsors",
             return_value=[{
                 "SponsorID": 1,
                 "Company": "Peak Performance",
                 "SponsorType": None,
                 "ContactInformation": None,
             }],
-        ), patch("sponsor_service.insert_sponsor") as insert:
+        ), patch("services.sponsor_service.insert_sponsor") as insert:
             result = sponsor_service.add_sponsor(
                 " peak performance ", "", "",
             )
@@ -126,8 +132,11 @@ class ServiceTests(unittest.TestCase):
             "SponsorType": None,
             "ContactInformation": None,
         }
-        with patch("sponsor_service.get_all_sponsors", return_value=[sponsor]), \
-                patch("sponsor_service.update_sponsor", return_value=1) as update:
+        with patch(
+            "services.sponsor_service.get_all_sponsors", return_value=[sponsor]
+        ), patch(
+            "services.sponsor_service.update_sponsor", return_value=1
+        ) as update:
             result = sponsor_service.edit_sponsor(
                 5, "New Sponsor", "", "",
             )
@@ -138,8 +147,11 @@ class ServiceTests(unittest.TestCase):
         delete_error = mysql.connector.IntegrityError(
             "Referenced sponsor", errno=1451,
         )
-        with patch("sponsor_service.get_all_sponsors", return_value=[sponsor]), \
-                patch("sponsor_service.delete_sponsor", side_effect=delete_error):
+        with patch(
+            "services.sponsor_service.get_all_sponsors", return_value=[sponsor]
+        ), patch(
+            "services.sponsor_service.delete_sponsor", side_effect=delete_error
+        ):
             result = sponsor_service.remove_sponsor(5)
 
         self.assertFalse(result[0])
@@ -147,10 +159,10 @@ class ServiceTests(unittest.TestCase):
 
     def test_redemption_requires_eligibility(self):
         with patch(
-            "reward_redemption_service.get_rewards_for_athlete",
+            "services.reward_redemption_service.get_rewards_for_athlete",
             return_value=[{"RewardID": 4, "IsEligible": 0}],
         ), patch(
-            "reward_redemption_service.insert_eligible_redemption"
+            "services.reward_redemption_service.insert_eligible_redemption"
         ) as insert:
             result = reward_redemption_service.redeem_reward(2, 4)
 
@@ -160,10 +172,10 @@ class ServiceTests(unittest.TestCase):
 
     def test_eligible_redemption_is_inserted_with_bound_values(self):
         with patch(
-            "reward_redemption_service.get_rewards_for_athlete",
+            "services.reward_redemption_service.get_rewards_for_athlete",
             return_value=[{"RewardID": 4, "IsEligible": 1}],
         ), patch(
-            "reward_redemption_service.insert_eligible_redemption",
+            "services.reward_redemption_service.insert_eligible_redemption",
             return_value=1,
         ) as insert:
             result = reward_redemption_service.redeem_reward(2, 4)
@@ -203,7 +215,7 @@ class ServiceTests(unittest.TestCase):
                 self.closed = True
 
         connection = FakeConnection()
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             result = database.insert_eligible_redemption(2, 4)
 
         self.assertEqual(result, 1)
@@ -242,7 +254,7 @@ class ServiceTests(unittest.TestCase):
                 self.closed = True
 
         connection = FakeConnection()
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             with self.assertRaisesRegex(RuntimeError, "write failed"):
                 database.insert_eligible_redemption(2, 4)
 
@@ -304,7 +316,7 @@ class RecordingConnection:
 class CascadingDeleteTests(unittest.TestCase):
     def test_deleting_an_athlete_removes_children_first_in_one_transaction(self):
         connection = RecordingConnection()
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             deleted = database.delete_athlete(7)
 
         tables = connection.tables()
@@ -336,7 +348,7 @@ class CascadingDeleteTests(unittest.TestCase):
         # The athlete's own DELETE fails, so the child deletes that
         # already ran must not be committed.
         connection = RecordingConnection(fail_on="DELETE FROM athlete WHERE")
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             with self.assertRaises(mysql.connector.Error):
                 database.delete_athlete(7)
 
@@ -347,7 +359,7 @@ class CascadingDeleteTests(unittest.TestCase):
 
     def test_activity_and_sponsor_deletes_clear_their_dependents(self):
         connection = RecordingConnection()
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             database.delete_activity(3)
         self.assertEqual(
             connection.tables(),
@@ -355,7 +367,7 @@ class CascadingDeleteTests(unittest.TestCase):
         )
 
         connection = RecordingConnection()
-        with patch("database.get_connection", return_value=connection):
+        with patch("db.database.get_connection", return_value=connection):
             database.delete_sponsor(5)
         self.assertEqual(
             connection.tables(), ["reward_redemption", "reward", "sponsor"]
@@ -363,7 +375,7 @@ class CascadingDeleteTests(unittest.TestCase):
 
     def test_missing_athlete_is_reported_instead_of_a_success(self):
         counts = {"activity": 0, "workout": 0, "athlete": 0}
-        with patch("athlete_service.delete_athlete", return_value=counts):
+        with patch("services.athlete_service.delete_athlete", return_value=counts):
             result = athlete_service.remove_athlete(999)
 
         self.assertEqual(result, (False, "No matching athlete found."))
@@ -375,7 +387,7 @@ class CascadingDeleteTests(unittest.TestCase):
             "athlete_sport": 0, "recruiter_athlete": 0,
             "reward_redemption": 0, "athlete": 1,
         }
-        with patch("athlete_service.delete_athlete", return_value=counts):
+        with patch("services.athlete_service.delete_athlete", return_value=counts):
             success, message = athlete_service.remove_athlete(7)
 
         self.assertTrue(success)
@@ -429,20 +441,23 @@ class StreamlitPageTests(unittest.TestCase):
             "IsEligible": 1,
         }
         patches = [
-            patch("athlete_service.get_all_athletes", return_value=[athlete]),
-            patch("athlete_service.get_athlete_by_id", return_value=athlete),
-            patch("achievement_service.get_all_achievements", return_value=[]),
-            patch("achievement_service.get_all_sports", return_value=[sport]),
-            patch("activity_service.get_all_activities", return_value=[]),
-            patch("workout_service.get_all_workouts", return_value=[workout]),
-            patch("workout_service.get_workout_by_id", return_value=workout),
-            patch("sport_service.get_all_sports", return_value=[sport]),
-            patch("sport_service.get_sport_by_id", return_value=sport),
-            patch("sponsor_service.get_all_sponsors", return_value=[sponsor]),
-            patch("sponsor_service.get_sponsor_by_id", return_value=sponsor),
-            patch("reward_redemption_service.get_all_redemptions", return_value=[]),
+            patch("services.athlete_service.get_all_athletes", return_value=[athlete]),
+            patch("services.athlete_service.get_athlete_by_id", return_value=athlete),
+            patch("services.achievement_service.get_all_achievements", return_value=[]),
+            patch("services.achievement_service.get_all_sports", return_value=[sport]),
+            patch("services.activity_service.get_all_activities", return_value=[]),
+            patch("services.workout_service.get_all_workouts", return_value=[workout]),
+            patch("services.workout_service.get_workout_by_id", return_value=workout),
+            patch("services.sport_service.get_all_sports", return_value=[sport]),
+            patch("services.sport_service.get_sport_by_id", return_value=sport),
+            patch("services.sponsor_service.get_all_sponsors", return_value=[sponsor]),
+            patch("services.sponsor_service.get_sponsor_by_id", return_value=sponsor),
             patch(
-                "reward_redemption_service.get_rewards_for_athlete",
+                "services.reward_redemption_service.get_all_redemptions",
+                return_value=[],
+            ),
+            patch(
+                "services.reward_redemption_service.get_rewards_for_athlete",
                 return_value=[reward],
             ),
         ]

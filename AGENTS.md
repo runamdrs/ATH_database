@@ -52,21 +52,40 @@ workouts, share achievements, join activities and earn Activity Points toward
 sponsor rewards. It is coursework for a databases class, so the code is meant
 to be **readable and explainable**, not clever.
 
-Three layers, strictly:
+Three layers, strictly, one package each:
 
 | File | Job | Rule |
 |---|---|---|
-| `app.py` | Streamlit UI only | Never imports `mysql.connector`, never writes SQL |
-| `*_service.py` | validation, business rules, user-facing messages | Never opens a connection itself |
-| `database.py` | all SQL | The **only** file that talks to MySQL |
-| `delete_summary.py` | turns delete counts into a sentence | No SQL, no Streamlit |
+| `app.py` | entry point — two lines, imports `main` and calls it | No UI, no logic, no SQL |
+| `ui/ath.py` | Streamlit UI only | Never imports `mysql.connector`, never writes SQL |
+| `services/*_service.py` | validation, business rules, user-facing messages | Never opens a connection itself |
+| `db/database.py` | all SQL | The **only** file that talks to MySQL |
+| `services/delete_summary.py` | turns delete counts into a sentence | No SQL, no Streamlit |
 
-If you need new data, add a function to `database.py`, expose it through a
-service, and call that service from `app.py`. Never shortcut a layer.
+If you need new data, add a function to `db/database.py`, expose it through a
+service, and call that service from `ui/ath.py`. Never shortcut a layer.
+
+Imports always name the package: `from db.database import ...` inside a
+service, `from services.athlete_service import ...` inside the UI. Each of
+`ui/`, `db/` and `services/` holds an empty `__init__.py`, which is what makes
+the folder a package those imports can reach.
+
+The whole interface lives inside `main()` in `ui/ath.py`, and `app.py` in the
+project root calls it:
+
+```python
+from ui.ath import main
+
+main()
+```
+
+Streamlit still runs `app.py`, so the interface file can move or be renamed
+without changing how the app is launched. `show_result()` stays at module
+level, above `main()` — it is a helper, not part of the interface flow.
 
 ---
 
-## 2. database.py
+## 2. db/database.py
 
 - Every query is parameterised with `%s` and a tuple. **Never** build SQL with
   f-strings, `+` or `.format()` — that is a SQL injection hole, and it is
@@ -145,7 +164,7 @@ achievement, athlete_portfolio (a VIEW) — nothing depends on them
 
 ## 4. Service modules
 
-Every `*_service.py` has the same shape, in this order:
+Every `services/*_service.py` has the same shape, in this order:
 
 ```python
 import mysql.connector
@@ -198,7 +217,7 @@ Non-negotiable parts:
   field into `None` so it is stored as SQL `NULL`:
   `location = (location or "").strip() or None`.
 - Every public function returns `(success: bool, message: str)` for writes,
-  or plain data for reads. `app.py` never sees an exception.
+  or plain data for reads. `ui/ath.py` never sees an exception.
 
 ---
 
@@ -253,14 +272,16 @@ comes first, and the "missing record" wording is the one in the table.
 `describe_related()` appends what else was removed, e.g.
 *"Deleted athlete. Also deleted 10 points records, 6 comments and 3 activities."*
 When you add a table to a delete chain, add its singular/plural label to
-`RECORD_NAMES` in `delete_summary.py` or it will show as a raw table name.
+`RECORD_NAMES` in `services/delete_summary.py` or it will show as a raw table name.
 
 ---
 
-## 7. app.py — the page layout
+## 7. ui/ath.py — the page layout
 
 Every CRUD page has exactly two sections: **Add**, then **Manage**. Copy the
-Athletes page and adapt it; do not invent a different arrangement.
+Athletes page and adapt it; do not invent a different arrangement. Every page
+sits one level in, inside `main()`; the example below is written flush left so
+it stays readable.
 
 ```python
 elif section == "Sports":
@@ -356,9 +377,9 @@ Run it before you say you are done:
 
 Conventions:
 
-- Patch at the **service** level (`patch("sport_service.get_all_sports", …)`),
-  not inside `database.py`, so no test needs a live database. That includes
-  the single-record lookups (`sport_service.get_sport_by_id`).
+- Patch at the **service** level (`patch("services.sport_service.get_all_sports", …)`),
+  not inside `db/database.py`, so no test needs a live database. That includes
+  the single-record lookups (`services.sport_service.get_sport_by_id`).
 - To test transactions, use a fake connection that records the statements it
   was given and whether `commit()` or `rollback()` was called — see
   `RecordingConnection` in the test file.
@@ -388,26 +409,38 @@ Conventions:
 
 ## 11. Known issues — do not "fix" silently
 
-- **Missing AUTO_INCREMENT.** Only `athlete` and `achievement` have it, so
-  inserting a sport, activity, workout, sponsor, reward or redemption fails
-  with `Field 'SportID' doesn't have a default value`. The fix is one
-  `ALTER TABLE … MODIFY <PK> INT NOT NULL AUTO_INCREMENT` per table, and it
-  changes the shared database — ask before running it.
+- **AUTO_INCREMENT: fixed on 2026-11-23, do not undo.** Every table with a
+  single-column primary key now has it, so every Add form works. Getting
+  there meant dropping ten foreign keys, altering the columns and adding the
+  constraints back — `sql/fix_auto_increment.sql`, which has now been run in
+  full. The three junction tables (`activity_participant`, `athlete_sport`,
+  `recruiter_athlete`) deliberately have none: their keys are composite and
+  both halves come from the dropdowns.
+
+  If you create a table, give its primary key `AUTO_INCREMENT` in the
+  `CREATE TABLE`, or its first `INSERT` will fail with
+  `Field '<PK>' doesn't have a default value`.
 - `athlete_portfolio` is a **VIEW**, not a table. Never insert into or delete
   from it.
 - Do not run schema changes, `DROP`, `TRUNCATE` or bulk updates against the
   shared database without asking first.
+- **No hand-made indexes, on purpose.** Primary keys, UNIQUE columns and
+  foreign keys already carry one, and the largest table holds 134 rows, so an
+  extra index would cost storage and slow down every write without speeding
+  any query up. Do not add one — or the `EXPLAIN` plumbing to justify one —
+  unless the data grows enough to make it worth measuring.
 
 ---
 
 ## 12. Before you call the work done
 
-1. Does it follow the layering in §1 (no SQL outside `database.py`)?
+1. Does it follow the layering in §1 (no SQL outside `db/database.py`)?
 2. Is every query parameterised?
 3. If you added a foreign key, is it in the parent's delete chain and in
    `RECORD_NAMES`?
 4. Do add and edit share one `check_*_input()`?
 5. Are the messages worded exactly as in §6?
 6. Does the new page section look like §7, down to the confirmation checkbox?
-7. Do all the tests pass?
-8. Did you leave the shared database exactly as you found it?
+7. Does every import name its package (`db.database`, `services.…`, `ui.…`)?
+8. Do all the tests pass?
+9. Did you leave the shared database exactly as you found it?

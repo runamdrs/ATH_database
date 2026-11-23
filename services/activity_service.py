@@ -2,11 +2,11 @@ import datetime
 
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_activities, get_activity_by_id,
     insert_activity, update_activity, delete_activity,
 )
-from delete_summary import describe_related
+from services.delete_summary import describe_related
 
 
 def search_activities(search, sport):
