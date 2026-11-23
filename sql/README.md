@@ -9,6 +9,7 @@ alter the schema everyone shares.
 
 | File | What it is |
 |---|---|
+| `ath_schema_and_data.sql` | **The script to submit and to set up a new machine.** Creates the `ath` database, all fifteen tables, the `athlete_portfolio` view and the sample data, exported on 2026-11-23 after the AUTO_INCREMENT fix. It drops and recreates the tables, so never run it against the shared database |
 | `fix_auto_increment.sql` | Gives each single-column primary key an `AUTO_INCREMENT`, so an `INSERT` that does not name the key still works. **Already applied in full on 2026-11-23** |
 | `restore_foreign_keys.sql` | Puts back the ten foreign keys the script above drops. Only needed if that script failed partway |
 | `backup_before_auto_increment.sql` | `mysqldump` of the whole `ath` database, 2026-11-20 |

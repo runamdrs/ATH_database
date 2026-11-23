@@ -43,6 +43,17 @@ def get_athlete_details(athlete_id):
     return get_athlete_by_id(athlete_id)
 
 
+def find_athlete_id(username):
+    """Return the AthleteID for a username, or None. Used to log a new
+    athlete in right after they sign up; athlete.Username is UNIQUE, so
+    it names exactly one athlete."""
+    username = (username or "").strip()
+    for athlete in get_all_athletes():
+        if athlete["Username"] == username:
+            return athlete["AthleteID"]
+    return None
+
+
 def get_athlete_sport_ids(athlete_id):
     """Return the SportIDs linked to the athlete (to pre-fill the sports
     picker on the update form)."""

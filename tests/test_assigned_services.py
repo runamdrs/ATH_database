@@ -45,9 +45,10 @@ class ServiceTests(unittest.TestCase):
         insert.assert_not_called()
 
     def test_workout_update_and_delete_respect_foreign_keys(self):
-        workout = {"WorkoutID": 3}
+        # Athlete 7 owns workout 3, so the ownership check lets them through.
+        workout = {"WorkoutID": 3, "AthleteID": 7}
         with patch(
-            "services.workout_service.get_all_workouts", return_value=[workout]
+            "services.workout_service.get_workout_by_id", return_value=workout
         ), patch(
             "services.workout_service.update_workout", return_value=1
         ) as update:
@@ -63,14 +64,40 @@ class ServiceTests(unittest.TestCase):
             "Referenced workout", errno=1451,
         )
         with patch(
-            "services.workout_service.get_all_workouts", return_value=[workout]
+            "services.workout_service.get_workout_by_id", return_value=workout
         ), patch(
             "services.workout_service.delete_workout", side_effect=delete_error
         ):
-            result = workout_service.remove_workout(3)
+            result = workout_service.remove_workout(3, 7)
 
         self.assertFalse(result[0])
         self.assertIn("referenced", result[1])
+
+    def test_someone_elses_workout_cannot_be_changed(self):
+        workout = {"WorkoutID": 3, "AthleteID": 8}
+        with patch("services.workout_service.get_workout_by_id", return_value=workout), \
+             patch("services.workout_service.update_workout") as update, \
+             patch("services.workout_service.delete_workout") as delete:
+            edited = workout_service.edit_workout(
+                3, 7, datetime.date(2026, 11, 16), "Run", None, "Completed", "",
+            )
+            removed = workout_service.remove_workout(3, 7)
+
+        self.assertEqual(edited, (False, "You can only change your own workouts."))
+        self.assertEqual(removed, (False, "You can only change your own workouts."))
+        update.assert_not_called()
+        delete.assert_not_called()
+
+    def test_manage_dropdowns_only_offer_your_own_records(self):
+        workouts = [
+            {"WorkoutID": 1, "AthleteID": 7, "ScheduledDate": "2026-11-16",
+             "WorkoutType": "Run", "Athlete": "Ann"},
+            {"WorkoutID": 2, "AthleteID": 8, "ScheduledDate": "2026-11-17",
+             "WorkoutType": "Swim", "Athlete": "Bob"},
+        ]
+        with patch("services.workout_service.get_all_workouts", return_value=workouts):
+            self.assertEqual(list(workout_service.get_workout_options(7)), [1])
+            self.assertEqual(list(workout_service.get_workout_options(8)), [2])
 
     def test_sport_duplicate_is_reported(self):
         duplicate_error = mysql.connector.IntegrityError(
@@ -446,6 +473,13 @@ class AthleteSportTests(unittest.TestCase):
         self.assertEqual(result, (False, "No matching athlete found."))
 
 
+    def test_new_username_is_found_to_log_in(self):
+        athletes = [{"AthleteID": 4, "Username": "ann"}, {"AthleteID": 9, "Username": "bob"}]
+        with patch("services.athlete_service.get_all_athletes", return_value=athletes):
+            self.assertEqual(athlete_service.find_athlete_id(" bob "), 9)
+            self.assertIsNone(athlete_service.find_athlete_id("nobody"))
+
+
 class ActivityParticipantTests(unittest.TestCase):
     def test_full_activity_cannot_be_joined(self):
         with patch("services.activity_service.insert_participant", return_value=0):
@@ -479,23 +513,50 @@ class ActivityParticipantTests(unittest.TestCase):
         self.assertEqual(len(connection.statements), 1)
 
     def test_status_messages(self):
-        with patch("services.activity_service.update_participant_status",
-                   return_value={"activity_participant": 1, "activity_point": 1}):
+        # Athlete 5 organizes activity 3.
+        organizer = patch("services.activity_service.get_activity_by_id",
+                          return_value={"ActivityID": 3, "AthleteID": 5})
+        with organizer, patch("services.activity_service.update_participant_status",
+                              return_value={"activity_participant": 1,
+                                            "activity_point": 1}):
             self.assertEqual(
-                activity_service.change_participation_status(3, 7, "Attended", 10),
+                activity_service.change_participation_status(3, 7, "Attended", 10, 5),
                 (True, "Updated status to Attended. Awarded 10 points."),
             )
-        with patch("services.activity_service.update_participant_status",
-                   return_value={"activity_participant": 0}):
+        with organizer, patch("services.activity_service.update_participant_status",
+                              return_value={"activity_participant": 0}):
             self.assertEqual(
-                activity_service.change_participation_status(3, 7, "No-Show", 10),
+                activity_service.change_participation_status(3, 7, "No-Show", 10, 5),
                 (False, "No matching participant found."),
             )
-        self.assertEqual(
-            activity_service.change_participation_status(3, 7, "Lost", 10),
-            (False, "Please choose a valid status."),
-        )
+        with organizer:
+            self.assertEqual(
+                activity_service.change_participation_status(3, 7, "Lost", 10, 5),
+                (False, "Please choose a valid status."),
+            )
 
+    def test_only_the_organizer_changes_the_roster(self):
+        with patch("services.activity_service.get_activity_by_id",
+                   return_value={"ActivityID": 3, "AthleteID": 5}), \
+             patch("services.activity_service.update_participant_status") as update, \
+             patch("services.activity_service.delete_participant") as delete:
+            # Athlete 7 is not the organizer: no status changes, and no
+            # removing someone else ...
+            self.assertEqual(
+                activity_service.change_participation_status(3, 8, "Attended", 10, 7),
+                (False, "Only the organizer can change this roster."),
+            )
+            self.assertEqual(
+                activity_service.remove_participant(3, 8, 7),
+                (False, "Only the organizer can change this roster."),
+            )
+            update.assert_not_called()
+            delete.assert_not_called()
+
+            # ... but they may take themselves off (leave).
+            delete.return_value = {"activity_participant": 1}
+            self.assertEqual(activity_service.remove_participant(3, 7, 7),
+                             (True, "Deleted participation entry."))
 
     def test_removing_a_participant(self):
         connection = RecordingConnection()
@@ -504,10 +565,12 @@ class ActivityParticipantTests(unittest.TestCase):
         self.assertEqual(connection.tables(), ["activity_participant"])
         self.assertEqual(connection.statements[0][1], (3, 7))
 
-        with patch("services.activity_service.delete_participant",
+        with patch("services.activity_service.get_activity_by_id",
+                   return_value={"ActivityID": 3, "AthleteID": 5}), \
+             patch("services.activity_service.delete_participant",
                    return_value={"activity_participant": 0}):
             self.assertEqual(
-                activity_service.remove_participant(3, 99),
+                activity_service.remove_participant(3, 99, 5),
                 (False, "No matching participation entry found."),
             )
 
@@ -574,15 +637,36 @@ class PointTests(unittest.TestCase):
         insert_point.assert_not_called()
 
     def test_point_edit_and_delete_report_missing_records(self):
-        with patch("services.point_service.update_point", return_value=0):
+        with patch("services.point_service.get_point_by_id", return_value=None), \
+             patch("services.point_service.update_point") as update:
             self.assertEqual(
                 point_service.edit_point(99, 1, None, None, 5, "Bonus", None),
                 (False, "No matching points record found."),
             )
-        with patch("services.point_service.delete_point",
+        update.assert_not_called()
+        with patch("services.point_service.get_point_by_id",
+                   return_value={"PointTransactionID": 1, "AthleteID": 1}), \
+             patch("services.point_service.delete_point",
                    return_value={"activity_point": 1}):
-            self.assertEqual(point_service.remove_point(1),
+            self.assertEqual(point_service.remove_point(1, 1),
                              (True, "Deleted points record."))
+
+    def test_only_your_own_points_can_be_changed(self):
+        someone_elses = {"PointTransactionID": 4, "AthleteID": 8}
+        with patch("services.point_service.get_point_by_id",
+                   return_value=someone_elses), \
+             patch("services.point_service.update_point") as update, \
+             patch("services.point_service.delete_point") as delete:
+            self.assertEqual(
+                point_service.edit_point(4, 1, None, None, 5, "Bonus", None),
+                (False, "You can only change your own points records."),
+            )
+            self.assertEqual(
+                point_service.remove_point(4, 1),
+                (False, "You can only change your own points records."),
+            )
+        update.assert_not_called()
+        delete.assert_not_called()
 
 
 class PostTests(unittest.TestCase):
@@ -596,15 +680,33 @@ class PostTests(unittest.TestCase):
         insert_post.assert_called_once_with(1, "Great run!", None)
 
     def test_comment_edit_and_delete(self):
-        self.assertEqual(post_service.edit_comment(1, "  "),
+        mine = {"CommentID": 1, "AthleteID": 1}
+        self.assertEqual(post_service.edit_comment(1, 1, "  "),
                          (False, "Comment text is required."))
-        with patch("services.post_service.update_comment", return_value=0):
-            self.assertEqual(post_service.edit_comment(99, "Hi"),
+        with patch("services.post_service.get_comment_by_id", return_value=None):
+            self.assertEqual(post_service.edit_comment(99, 1, "Hi"),
                              (False, "No matching comment found."))
-        with patch("services.post_service.delete_comment",
+        with patch("services.post_service.get_comment_by_id", return_value=mine), \
+             patch("services.post_service.delete_comment",
                    return_value={"comment": 1}):
-            self.assertEqual(post_service.remove_comment(1),
+            self.assertEqual(post_service.remove_comment(1, 1),
                              (True, "Deleted comment."))
+
+    def test_only_your_own_comments_are_offered_and_changed(self):
+        comments = [
+            {"CommentID": 1, "AthleteID": 1, "Athlete": "Ann", "Text": "Mine"},
+            {"CommentID": 2, "AthleteID": 8, "Athlete": "Bob", "Text": "His"},
+        ]
+        with patch("services.post_service.get_comments_for_post",
+                   return_value=comments):
+            self.assertEqual(post_service.get_comment_options(5, 1), {1: "Ann: Mine"})
+
+        with patch("services.post_service.get_comment_by_id",
+                   return_value=comments[1]), \
+             patch("services.post_service.update_comment") as update:
+            self.assertEqual(post_service.edit_comment(2, 1, "Hacked"),
+                             (False, "You can only change your own comments."))
+        update.assert_not_called()
 
     def test_deleting_a_comment_is_one_bound_statement(self):
         connection = RecordingConnection()
@@ -631,6 +733,10 @@ class StreamlitPageTests(unittest.TestCase):
             "Location": None,
             "SkillLevel": "Beginner",
         }
+        # Owns nothing, to check that switching profiles changes what
+        # the user can manage.
+        other_athlete = dict(athlete, AthleteID=2, Name="Other Athlete",
+                             Username="other", Email="other@example.com")
         workout = {
             "WorkoutID": 1,
             "AthleteID": 1,
@@ -702,7 +808,8 @@ class StreamlitPageTests(unittest.TestCase):
             "IsEligible": 1,
         }
         patches = [
-            patch("services.athlete_service.get_all_athletes", return_value=[athlete]),
+            patch("services.athlete_service.get_all_athletes",
+                  return_value=[athlete, other_athlete]),
             patch("services.athlete_service.get_athlete_by_id", return_value=athlete),
             patch("services.athlete_service.get_sport_ids_for_athlete", return_value=[1]),
             patch("services.post_service.get_all_posts", return_value=[post]),
@@ -783,6 +890,37 @@ class StreamlitPageTests(unittest.TestCase):
                     any("Confirm deletion" in box.label for box in app.checkbox),
                     f"{section} delete mode has no confirmation checkbox",
                 )
+
+            # Simulated login: logged in as athlete 1, their workout is
+            # offered; switch to athlete 2 and there is nothing to manage.
+            app.sidebar.radio[0].set_value("Workouts").run()
+            self.assertEqual(app.selectbox(key="current_athlete_id").value, 1)
+            self.assertEqual(app.selectbox(key="manage_workout_id").options,
+                             ["2026-11-16 - Run (Test Athlete)"])
+
+            app.selectbox(key="current_athlete_id").set_value(2).run()
+            self.assertEqual(len(app.exception), 0)
+            self.assertIn("You have no workouts yet.",
+                          [info.value for info in app.info])
+
+            # Signing up from the sidebar logs the new athlete in. The
+            # athlete list above already contains "other" (ID 2), standing
+            # in for the row the INSERT would create.
+            app.selectbox(key="current_athlete_id").set_value(1).run()
+            with patch("services.athlete_service.insert_athlete") as insert_athlete:
+                sidebar_inputs = app.sidebar.text_input
+                sidebar_inputs[0].input("Other Athlete")
+                sidebar_inputs[1].input("other")
+                sidebar_inputs[2].input("other@example.com")
+                app.sidebar.button[0].click().run()
+            self.assertEqual(len(app.exception), 0)
+            insert_athlete.assert_called_once()
+            self.assertEqual(app.selectbox(key="current_athlete_id").value, 2)
+            self.assertIn("You are now logged in.", app.success[0].value)
+
+            # The Athletes page no longer creates athletes.
+            app.sidebar.radio[0].set_value("Athletes").run()
+            self.assertNotIn("Add an Athlete", [s.value for s in app.subheader])
 
 
 if __name__ == "__main__":

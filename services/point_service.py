@@ -5,6 +5,7 @@ from db.database import (
     insert_point, update_point, delete_point,
 )
 from services.delete_summary import describe_related
+from services.ownership import check_owner
 
 
 def list_points():
@@ -13,14 +14,14 @@ def list_points():
     return get_all_points()
 
 
-def get_point_options():
+def get_point_options(athlete_id):
     """Map PointTransactionID -> "10 pts - Ann (Attended activity)" for the
-    manage form's dropdown, so users pick a record instead of typing an ID."""
+    manage form's dropdown, limited to the current user's points records."""
     return {
         point["PointTransactionID"]: (
             f"{point['PointsEarned']} pts - {point['Athlete']} ({point['Reason']})"
         )
-        for point in get_all_points()
+        for point in get_all_points() if point["AthleteID"] == athlete_id
     }
 
 
@@ -81,9 +82,13 @@ def add_point(athlete_id, activity_id, workout_id, points_earned, reason,
 
 def edit_point(point_id, athlete_id, activity_id, workout_id, points_earned, reason,
                date_earned):
-    """Validate the input, then update the points record.
-    Returns (success, message)."""
+    """Validate the input, then update the points record. athlete_id is
+    the current user, who must own it. Returns (success, message)."""
     error, (reason,) = check_point_input(athlete_id, workout_id, points_earned, reason)
+    if error:
+        return False, error
+    error = check_owner(get_point_by_id(point_id), athlete_id,
+                        "points record", "points records")
     if error:
         return False, error
 
@@ -102,9 +107,15 @@ def edit_point(point_id, athlete_id, activity_id, workout_id, points_earned, rea
     return True, f'Updated points record "{reason}".'
 
 
-def remove_point(point_id):
-    """Delete the points record. Nothing references it, so nothing else
-    goes with it. Returns (success, message)."""
+def remove_point(point_id, athlete_id):
+    """Delete the points record, if the current user (athlete_id) owns it.
+    Nothing references it, so nothing else goes with it.
+    Returns (success, message)."""
+    error = check_owner(get_point_by_id(point_id), athlete_id,
+                        "points record", "points records")
+    if error:
+        return False, error
+
     try:
         deleted = delete_point(point_id)
     except mysql.connector.Error as e:

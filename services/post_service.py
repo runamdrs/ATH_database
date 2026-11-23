@@ -5,6 +5,7 @@ from db.database import (
     insert_post, insert_comment, update_comment, delete_comment,
 )
 from services.delete_summary import describe_related
+from services.ownership import check_owner
 
 
 def list_posts():
@@ -59,12 +60,12 @@ def add_post(athlete_id, content, media_url):
     return True, "Added post."
 
 
-def get_comment_options(post_id):
+def get_comment_options(post_id, athlete_id):
     """Map CommentID -> "Author: first words" for the manage form's
-    dropdown, limited to the comments on one post."""
+    dropdown, limited to the current user's comments on one post."""
     return {
         c["CommentID"]: f"{c['Athlete']}: {c['Text'][:40]}"
-        for c in get_comments_for_post(post_id)
+        for c in get_comments_for_post(post_id) if c["AthleteID"] == athlete_id
     }
 
 
@@ -107,9 +108,13 @@ def add_comment(athlete_id, post_id, text):
     return True, "Added comment."
 
 
-def edit_comment(comment_id, text):
-    """Validate the text, then update the comment. Returns (success, message)."""
+def edit_comment(comment_id, athlete_id, text):
+    """Validate the text, then update the comment. athlete_id is the
+    current user, who must have written it. Returns (success, message)."""
     error, (text,) = check_comment_input(text)
+    if error:
+        return False, error
+    error = check_owner(get_comment_by_id(comment_id), athlete_id, "comment", "comments")
     if error:
         return False, error
 
@@ -125,9 +130,14 @@ def edit_comment(comment_id, text):
     return True, "Updated comment."
 
 
-def remove_comment(comment_id):
-    """Delete the comment. Nothing references it, so nothing else goes
-    with it. Returns (success, message)."""
+def remove_comment(comment_id, athlete_id):
+    """Delete the comment, if the current user (athlete_id) wrote it.
+    Nothing references it, so nothing else goes with it.
+    Returns (success, message)."""
+    error = check_owner(get_comment_by_id(comment_id), athlete_id, "comment", "comments")
+    if error:
+        return False, error
+
     try:
         deleted = delete_comment(comment_id)
     except mysql.connector.Error as e:

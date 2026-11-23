@@ -102,23 +102,28 @@ def get_all_athletes():
 
 
 def get_all_achievements():
+    # JOIN athlete so the table shows who earned it, not just an ID.
     return run_select(
         """
-        SELECT AchievementID, AthleteID, Title, Description, DateEarned
-        FROM achievement
-        ORDER BY AchievementID
+        SELECT ac.AchievementID, ac.AthleteID, a.Name AS Athlete, ac.Title,
+               ac.Description, ac.DateEarned
+        FROM achievement ac
+        JOIN athlete a ON a.AthleteID = ac.AthleteID
+        ORDER BY ac.AchievementID
         """
     )
 
 
 def get_all_activities():
-    # JOIN sport so the table shows the sport's name, not just its ID.
+    # JOIN sport and athlete so the table shows the sport's name and the
+    # organizer's name, not just their IDs.
     rows = run_select(
         """
-        SELECT a.ActivityID, a.AthleteID, s.Name AS Sport, a.Type,
-               a.Date, a.Time, a.Duration, a.Location, a.MaxParticipants
+        SELECT a.ActivityID, a.AthleteID, o.Name AS Organizer, s.Name AS Sport,
+               a.Type, a.Date, a.Time, a.Duration, a.Location, a.MaxParticipants
         FROM activity a
         JOIN sport s ON s.SportID = a.SportID
+        JOIN athlete o ON o.AthleteID = a.AthleteID
         ORDER BY a.ActivityID
         """
     )
@@ -264,7 +269,7 @@ def get_all_points():
 def get_comments_for_post(post_id):
     return run_select(
         """
-        SELECT c.CommentID, a.Name AS Athlete, c.Text, c.DateCreated
+        SELECT c.CommentID, c.AthleteID, a.Name AS Athlete, c.Text, c.DateCreated
         FROM comment c
         JOIN athlete a ON a.AthleteID = c.AthleteID
         WHERE c.PostID = %s
