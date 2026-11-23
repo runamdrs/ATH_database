@@ -86,11 +86,17 @@ def run_write_many(statements):
 
 
 def get_all_athletes():
+    # athlete_sport has no page of its own, so the athlete table lists
+    # each athlete's sports as one comma-separated column.
     return run_select(
         """
-        SELECT AthleteID, Name, Username, Email, Location, SkillLevel
-        FROM athlete
-        ORDER BY AthleteID
+        SELECT a.AthleteID, a.Name, a.Username, a.Email, a.Location, a.SkillLevel,
+               (SELECT GROUP_CONCAT(s.Name ORDER BY s.Name SEPARATOR ', ')
+                FROM athlete_sport x
+                JOIN sport s ON s.SportID = x.SportID
+                WHERE x.AthleteID = a.AthleteID) AS Sports
+        FROM athlete a
+        ORDER BY a.AthleteID
         """
     )
 
@@ -187,6 +193,62 @@ def get_rewards_for_athlete(athlete_id):
     )
 
 
+def get_roster(activity_id):
+    """Everyone who joined one activity, with their status."""
+    return run_select(
+        """
+        SELECT p.AthleteID, a.Name AS Athlete, p.JoinDate, p.ParticipationStatus
+        FROM activity_participant p
+        JOIN athlete a ON a.AthleteID = p.AthleteID
+        WHERE p.ActivityID = %s
+        ORDER BY p.JoinDate, a.Name
+        """,
+        (activity_id,)
+    )
+
+
+def get_all_posts():
+    return run_select(
+        """
+        SELECT p.PostID, a.Name AS Athlete, p.Content, p.DateCreated, p.MediaURL,
+               (SELECT COUNT(*) FROM comment c WHERE c.PostID = p.PostID) AS Comments
+        FROM post p
+        JOIN athlete a ON a.AthleteID = p.AthleteID
+        ORDER BY p.DateCreated DESC, p.PostID DESC
+        """
+    )
+
+
+def get_all_points():
+    # LEFT JOIN because a points record may come from an activity, a
+    # workout, or neither (a manual award), so both IDs can be NULL.
+    return run_select(
+        """
+        SELECT ap.PointTransactionID, ap.AthleteID, a.Name AS Athlete,
+               act.Type AS Activity, w.WorkoutType AS Workout,
+               ap.PointsEarned, ap.Reason, ap.DateEarned
+        FROM activity_point ap
+        JOIN athlete a ON a.AthleteID = ap.AthleteID
+        LEFT JOIN activity act ON act.ActivityID = ap.ActivityID
+        LEFT JOIN workout w ON w.WorkoutID = ap.WorkoutID
+        ORDER BY ap.DateEarned DESC, ap.PointTransactionID DESC
+        """
+    )
+
+
+def get_comments_for_post(post_id):
+    return run_select(
+        """
+        SELECT c.CommentID, a.Name AS Athlete, c.Text, c.DateCreated
+        FROM comment c
+        JOIN athlete a ON a.AthleteID = c.AthleteID
+        WHERE c.PostID = %s
+        ORDER BY c.DateCreated, c.CommentID
+        """,
+        (post_id,)
+    )
+
+
 def get_all_redemptions():
     return run_select(
         """
@@ -217,6 +279,15 @@ def get_athlete_by_id(athlete_id):
         (athlete_id,)
     )
     return rows[0] if rows else None
+
+
+def get_sport_ids_for_athlete(athlete_id):
+    """The SportIDs linked to one athlete, to pre-fill the sports picker."""
+    rows = run_select(
+        "SELECT SportID FROM athlete_sport WHERE AthleteID = %s",
+        (athlete_id,)
+    )
+    return [row["SportID"] for row in rows]
 
 
 def get_achievement_by_id(achievement_id):
@@ -269,6 +340,45 @@ def get_sport_by_id(sport_id):
     return rows[0] if rows else None
 
 
+def get_point_by_id(point_id):
+    rows = run_select(
+        """
+        SELECT PointTransactionID, AthleteID, ActivityID, WorkoutID,
+               PointsEarned, Reason, DateEarned
+        FROM activity_point
+        WHERE PointTransactionID = %s
+        """,
+        (point_id,)
+    )
+    return rows[0] if rows else None
+
+
+def get_comment_by_id(comment_id):
+    rows = run_select(
+        """
+        SELECT CommentID, AthleteID, PostID, Text, DateCreated
+        FROM comment
+        WHERE CommentID = %s
+        """,
+        (comment_id,)
+    )
+    return rows[0] if rows else None
+
+
+def get_participant(activity_id, athlete_id):
+    # activity_participant has a two-column primary key, so both halves
+    # are needed to find one row.
+    rows = run_select(
+        """
+        SELECT ActivityID, AthleteID, JoinDate, ParticipationStatus
+        FROM activity_participant
+        WHERE ActivityID = %s AND AthleteID = %s
+        """,
+        (activity_id, athlete_id)
+    )
+    return rows[0] if rows else None
+
+
 def get_sponsor_by_id(sponsor_id):
     rows = run_select(
         """
@@ -287,14 +397,27 @@ def get_sponsor_by_id(sponsor_id):
 # with f-strings or + (that opens the door to SQL injection).
 # ---------------------------------------------------------------
 
-def insert_athlete(name, username, email, location, skill_level):
-    return run_write(
+def insert_athlete(name, username, email, location, skill_level, sport_ids=()):
+    """Insert an athlete and one athlete_sport row per chosen sport, in
+    one transaction. Returns {table: rows inserted}."""
+    statements = [(
+        "athlete",
         """
         INSERT INTO athlete (Name, Username, Email, Location, SkillLevel)
         VALUES (%s, %s, %s, %s, %s)
         """,
         (name, username, email, location, skill_level)
-    )
+    )]
+    # LAST_INSERT_ID() is the AthleteID MySQL just generated on this
+    # connection. athlete_sport has no AUTO_INCREMENT column, so these
+    # inserts do not change it.
+    for sport_id in sport_ids:
+        statements.append((
+            f"athlete_sport {sport_id}",
+            "INSERT INTO athlete_sport (AthleteID, SportID) VALUES (LAST_INSERT_ID(), %s)",
+            (sport_id,)
+        ))
+    return run_write_many(statements)
 
 
 def insert_achievement(athlete_id, sport_id, title, description, date_earned):
@@ -326,15 +449,29 @@ def insert_activity(athlete_id, sport_id, activity_type, date, time, duration,
 # with that ID exists.
 # ---------------------------------------------------------------
 
-def update_athlete(athlete_id, name, username, email, location, skill_level):
-    return run_write(
-        """
-        UPDATE athlete
-        SET Name = %s, Username = %s, Email = %s, Location = %s, SkillLevel = %s
-        WHERE AthleteID = %s
-        """,
-        (name, username, email, location, skill_level, athlete_id)
-    )
+def update_athlete(athlete_id, name, username, email, location, skill_level,
+                   sport_ids=()):
+    """Update an athlete and replace their sport links, in one
+    transaction. Returns {table: rows affected}; "athlete" is 0 when no
+    athlete with that ID exists."""
+    statements = [
+        ("athlete", """
+            UPDATE athlete
+            SET Name = %s, Username = %s, Email = %s, Location = %s, SkillLevel = %s
+            WHERE AthleteID = %s
+         """, (name, username, email, location, skill_level, athlete_id)),
+        # Simplest way to change the links: drop the old ones, add the
+        # chosen ones. Both happen in the same transaction.
+        ("athlete_sport", "DELETE FROM athlete_sport WHERE AthleteID = %s",
+         (athlete_id,)),
+    ]
+    for sport_id in sport_ids:
+        statements.append((
+            f"athlete_sport {sport_id}",
+            "INSERT INTO athlete_sport (AthleteID, SportID) VALUES (%s, %s)",
+            (athlete_id, sport_id)
+        ))
+    return run_write_many(statements)
 
 
 def update_achievement(achievement_id, athlete_id, sport_id, title, description,
@@ -568,3 +705,151 @@ def insert_eligible_redemption(athlete_id, reward_id):
         """,
         (athlete_id, reward_id, athlete_id, athlete_id),
     )
+
+
+# ---------------------------------------------------------------
+# activity_participant: written by "Join" and by status changes.
+# ---------------------------------------------------------------
+
+def insert_participant(activity_id, athlete_id):
+    """Register an athlete for an activity. Inserts 0 rows when the
+    activity does not exist or is already full."""
+    return run_write(
+        """
+        INSERT INTO activity_participant
+            (ActivityID, AthleteID, JoinDate, ParticipationStatus)
+        SELECT a.ActivityID, %s, CURDATE(), 'Registered'
+        FROM activity a
+        WHERE a.ActivityID = %s
+          AND (a.MaxParticipants IS NULL
+               OR (SELECT COUNT(*) FROM activity_participant p
+                   WHERE p.ActivityID = a.ActivityID) < a.MaxParticipants)
+        """,
+        (athlete_id, activity_id)
+    )
+
+
+def update_participant_status(activity_id, athlete_id, status, points):
+    """Change a participant's status. When it becomes 'Attended', also
+    award `points` in activity_point, once per athlete and activity, in
+    the same transaction. Returns {table: rows affected}."""
+    statements = [
+        ("activity_participant", """
+            UPDATE activity_participant
+            SET ParticipationStatus = %s
+            WHERE ActivityID = %s AND AthleteID = %s
+         """, (status, activity_id, athlete_id)),
+    ]
+    if status == "Attended" and points > 0:
+        # NOT EXISTS stops a second award when someone is marked Attended
+        # twice; the EXISTS makes sure the participant really is there.
+        statements.append(("activity_point", """
+            INSERT INTO activity_point
+                (AthleteID, ActivityID, WorkoutID, PointsEarned, Reason, DateEarned)
+            SELECT %s, %s, NULL, %s, 'Attended activity', NOW()
+            FROM DUAL
+            WHERE EXISTS (
+                SELECT 1 FROM activity_participant
+                WHERE ActivityID = %s AND AthleteID = %s
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM activity_point
+                WHERE AthleteID = %s AND ActivityID = %s
+                  AND Reason = 'Attended activity'
+            )
+         """, (athlete_id, activity_id, points, activity_id, athlete_id,
+               athlete_id, activity_id)))
+    return run_write_many(statements)
+
+
+def delete_participant(activity_id, athlete_id):
+    """Take an athlete off an activity. No table references
+    activity_participant, so this is a single statement; points already
+    earned for the activity stay in activity_point."""
+    return run_write_many([
+        ("activity_participant", """
+            DELETE FROM activity_participant
+            WHERE ActivityID = %s AND AthleteID = %s
+         """, (activity_id, athlete_id)),
+    ])
+
+
+# ---------------------------------------------------------------
+# activity_point: Activity Points earned by athletes. Awarded
+# automatically for attending an activity, or entered by hand.
+# ---------------------------------------------------------------
+
+def insert_point(athlete_id, activity_id, workout_id, points_earned, reason,
+                 date_earned):
+    return run_write(
+        """
+        INSERT INTO activity_point
+            (AthleteID, ActivityID, WorkoutID, PointsEarned, Reason, DateEarned)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (athlete_id, activity_id, workout_id, points_earned, reason, date_earned)
+    )
+
+
+def update_point(point_id, athlete_id, activity_id, workout_id, points_earned,
+                 reason, date_earned):
+    return run_write(
+        """
+        UPDATE activity_point
+        SET AthleteID = %s, ActivityID = %s, WorkoutID = %s, PointsEarned = %s,
+            Reason = %s, DateEarned = %s
+        WHERE PointTransactionID = %s
+        """,
+        (athlete_id, activity_id, workout_id, points_earned, reason, date_earned,
+         point_id)
+    )
+
+
+def delete_point(point_id):
+    """Delete a points record. Nothing references activity_point, so
+    this is a single statement inside run_write_many() to keep the
+    usual {table: rows deleted} shape."""
+    return run_write_many([
+        ("activity_point", "DELETE FROM activity_point WHERE PointTransactionID = %s",
+         (point_id,)),
+    ])
+
+
+# ---------------------------------------------------------------
+# post and comment
+# ---------------------------------------------------------------
+
+def insert_post(athlete_id, content, media_url):
+    return run_write(
+        """
+        INSERT INTO post (AthleteID, Content, DateCreated, MediaURL)
+        VALUES (%s, %s, NOW(), %s)
+        """,
+        (athlete_id, content, media_url)
+    )
+
+
+def insert_comment(athlete_id, post_id, text):
+    return run_write(
+        """
+        INSERT INTO comment (AthleteID, PostID, Text, DateCreated)
+        VALUES (%s, %s, %s, NOW())
+        """,
+        (athlete_id, post_id, text)
+    )
+
+
+def update_comment(comment_id, text):
+    # Only the text can change: the author and the post stay the same.
+    return run_write(
+        "UPDATE comment SET Text = %s WHERE CommentID = %s",
+        (text, comment_id)
+    )
+
+
+def delete_comment(comment_id):
+    """Delete a comment. Nothing references comment, so this is a single
+    statement inside run_write_many() to keep the usual shape."""
+    return run_write_many([
+        ("comment", "DELETE FROM comment WHERE CommentID = %s", (comment_id,)),
+    ])

@@ -2,7 +2,7 @@ import streamlit as st
 
 from services.athlete_service import (
     search_athletes, get_skill_levels, get_athlete_options, get_athlete_details,
-    add_athlete, edit_athlete, remove_athlete, SKILL_LEVELS,
+    get_athlete_sport_ids, add_athlete, edit_athlete, remove_athlete, SKILL_LEVELS,
 )
 from services.achievement_service import (
     search_achievements, get_dates_earned, get_achievement_options,
@@ -11,6 +11,9 @@ from services.achievement_service import (
 from services.activity_service import (
     search_activities, get_activity_sports, get_activity_options, get_activity_details,
     add_activity, edit_activity, remove_activity,
+    list_roster, get_participant_options, get_participant_details,
+    join_activity, change_participation_status, remove_participant,
+    PARTICIPATION_STATUSES,
 )
 from services.workout_service import (
     list_workouts, get_workout_options, get_workout_details,
@@ -23,6 +26,15 @@ from services.sport_service import (
 from services.sponsor_service import (
     list_sponsors, get_sponsor_options, get_sponsor_details,
     add_sponsor, edit_sponsor, remove_sponsor,
+)
+from services.post_service import (
+    list_posts, get_post_options, list_comments, add_post,
+    get_comment_options, get_comment_details,
+    add_comment, edit_comment, remove_comment,
+)
+from services.point_service import (
+    list_points, get_point_options, get_point_details,
+    add_point, edit_point, remove_point,
 )
 from services.reward_redemption_service import (
     list_redemptions, list_rewards_for_athlete, redeem_reward,
@@ -53,8 +65,8 @@ def main():
     section = st.sidebar.radio(
         "Browse",
         [
-            "Athletes", "Achievements", "Activities", "Workouts",
-            "Sports", "Sponsors", "Reward Redemptions",
+            "Athletes", "Achievements", "Activities", "Workouts", "Points",
+            "Sports", "Sponsors", "Posts", "Reward Redemptions",
         ],
     )
 
@@ -73,16 +85,25 @@ def main():
         st.write(f"{len(results)} athlete(s) found.")
 
         st.subheader("Add an Athlete")
+        sport_options = get_sport_options()       # {SportID: "Sport name"}
         with st.form("add_athlete"):
             name = st.text_input("Name")
             username = st.text_input("Username")
             email = st.text_input("Email")
             location = st.text_input("Location (optional)")
             new_skill_level = st.selectbox("Skill level", SKILL_LEVELS)
+            # One athlete_sport row is saved per sport picked here.
+            sport_ids = st.multiselect(
+                "Sports (optional)",
+                options=list(sport_options),
+                format_func=lambda sport_id: sport_options[sport_id],
+            )
             submitted = st.form_submit_button("Add Athlete")
 
         if submitted:
-            show_result(*add_athlete(name, username, email, location, new_skill_level))
+            show_result(*add_athlete(
+                name, username, email, location, new_skill_level, sport_ids,
+            ))
 
         st.subheader("Manage Athletes")
         # The radio sits outside the form so the form re-renders when it changes.
@@ -121,6 +142,14 @@ def main():
                         if current["SkillLevel"] in SKILL_LEVELS else 0,
                         key=f"athlete_skill_{athlete_id}",
                     )
+                    sport_ids = st.multiselect(
+                        "Sports (optional)",
+                        options=list(sport_options),
+                        default=[sport_id for sport_id in get_athlete_sport_ids(athlete_id)
+                                 if sport_id in sport_options],
+                        format_func=lambda sport_id: sport_options[sport_id],
+                        key=f"athlete_sports_{athlete_id}",
+                    )
                 else:
                     # Deleting an athlete also deletes everything that
                     # references them, so the checkbox spells that out.
@@ -136,6 +165,7 @@ def main():
                 if mode == "Update":
                     show_result(*edit_athlete(
                         athlete_id, name, username, email, location, new_skill_level,
+                        sport_ids,
                     ))
                 elif not confirm:
                     st.warning("Please confirm deletion.")
@@ -351,6 +381,86 @@ def main():
                 else:
                     show_result(*remove_activity(activity_id))
 
+        st.subheader("Join an Activity")
+        if not activity_options or not athlete_options:
+            st.info("Add an athlete and an activity first.")
+        else:
+            # Outside the form so the roster below follows the chosen activity.
+            join_activity_id = st.selectbox(
+                "Activity",
+                options=list(activity_options),
+                format_func=lambda activity_id: activity_options[activity_id],
+                key="join_activity_id",
+            )
+
+            with st.form("join_activity"):
+                join_athlete_id = st.selectbox(
+                    "Join as",
+                    options=list(athlete_options),
+                    format_func=lambda athlete_id: athlete_options[athlete_id],
+                )
+                submitted = st.form_submit_button("Join")
+
+            if submitted:
+                show_result(*join_activity(join_activity_id, join_athlete_id))
+
+            st.subheader("Roster")
+            st.dataframe(list_roster(join_activity_id))
+
+            st.subheader("Manage Participants")
+            # The radio sits outside the form so the form re-renders when it changes.
+            mode = st.radio("Action", ["Update", "Delete"], horizontal=True,
+                            key="participant_mode")
+            participant_options = get_participant_options(join_activity_id)
+
+            if not participant_options:
+                st.info("No one has joined this activity yet.")
+            else:
+                participant_id = st.selectbox(
+                    "Participant",
+                    options=list(participant_options),
+                    format_func=lambda athlete_id: participant_options[athlete_id],
+                    key="manage_participant_id",
+                )
+                current = get_participant_details(join_activity_id, participant_id)
+
+                with st.form("manage_participant"):
+                    if mode == "Update":
+                        # Activity and athlete IDs in the key give every
+                        # participant fresh, pre-filled widgets.
+                        widget_id = f"{join_activity_id}_{participant_id}"
+                        new_status = st.selectbox(
+                            "Status",
+                            PARTICIPATION_STATUSES,
+                            index=PARTICIPATION_STATUSES.index(
+                                current["ParticipationStatus"])
+                            if current["ParticipationStatus"] in PARTICIPATION_STATUSES
+                            else 0,
+                            key=f"participant_status_{widget_id}",
+                        )
+                        # Points are only awarded once, the first time someone
+                        # is marked Attended for this activity.
+                        points = st.number_input("Points to award if Attended",
+                                                 min_value=0, value=10, step=5,
+                                                 key=f"participant_points_{widget_id}")
+                    else:
+                        st.warning(
+                            "This takes the athlete off the activity. Points "
+                            "they already earned for it are kept."
+                        )
+                        confirm = st.checkbox("Confirm deletion")
+                    submitted = st.form_submit_button(mode)
+
+                if submitted:
+                    if mode == "Update":
+                        show_result(*change_participation_status(
+                            join_activity_id, participant_id, new_status, points,
+                        ))
+                    elif not confirm:
+                        st.warning("Please confirm deletion.")
+                    else:
+                        show_result(*remove_participant(join_activity_id, participant_id))
+
     elif section == "Workouts":
         st.header("Workouts")
 
@@ -446,6 +556,119 @@ def main():
                     st.warning("Please confirm deletion.")
                 else:
                     show_result(*remove_workout(workout_id))
+
+    elif section == "Points":
+        st.header("Activity Points")
+
+        st.dataframe(list_points())
+
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+        activity_options = get_activity_options()   # {ActivityID: "Type on Date"}
+        workout_options = get_workout_options()   # {WorkoutID: "date - type (athlete)"}
+        # Activity and workout are optional, so both dropdowns start with None.
+        activity_choices = [None] + list(activity_options)
+        workout_choices = [None] + list(workout_options)
+
+        if not athlete_options:
+            st.warning("Add an athlete before awarding points.")
+        else:
+            st.subheader("Add Points")
+            with st.form("add_point"):
+                athlete_id = st.selectbox(
+                    "Athlete",
+                    options=list(athlete_options),
+                    format_func=lambda athlete_id: athlete_options[athlete_id],
+                )
+                activity_id = st.selectbox(
+                    "For activity (optional)",
+                    options=activity_choices,
+                    format_func=lambda activity_id: "None" if activity_id is None
+                    else activity_options[activity_id],
+                )
+                workout_id = st.selectbox(
+                    "For workout (optional)",
+                    options=workout_choices,
+                    format_func=lambda workout_id: "None" if workout_id is None
+                    else workout_options[workout_id],
+                )
+                points_earned = st.number_input("Points", min_value=1, value=10, step=5)
+                reason = st.text_input("Reason")
+                date_earned = st.date_input("Date earned")
+                submitted = st.form_submit_button("Add Points")
+
+            if submitted:
+                show_result(*add_point(
+                    athlete_id, activity_id, workout_id, points_earned, reason,
+                    date_earned,
+                ))
+
+        st.subheader("Manage Points")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="point_mode")
+        point_options = get_point_options()   # {PointTransactionID: "10 pts - Ann (...)"}
+
+        if not point_options:
+            st.info("No points records available.")
+        else:
+            point_id = st.selectbox(
+                "Points record",
+                options=list(point_options),
+                format_func=lambda point_id: point_options[point_id],
+                key="manage_point_id",
+            )
+            current = get_point_details(point_id)
+
+            with st.form("manage_point"):
+                if mode == "Update":
+                    # The ID in each key gives every record fresh, pre-filled widgets.
+                    new_athlete_id = st.selectbox(
+                        "Athlete",
+                        options=list(athlete_options),
+                        index=list(athlete_options).index(current["AthleteID"]),
+                        format_func=lambda athlete_id: athlete_options[athlete_id],
+                        key=f"point_athlete_{point_id}",
+                    )
+                    new_activity_id = st.selectbox(
+                        "For activity (optional)",
+                        options=activity_choices,
+                        index=activity_choices.index(current["ActivityID"])
+                        if current["ActivityID"] in activity_choices else 0,
+                        format_func=lambda activity_id: "None" if activity_id is None
+                        else activity_options[activity_id],
+                        key=f"point_activity_{point_id}",
+                    )
+                    new_workout_id = st.selectbox(
+                        "For workout (optional)",
+                        options=workout_choices,
+                        index=workout_choices.index(current["WorkoutID"])
+                        if current["WorkoutID"] in workout_choices else 0,
+                        format_func=lambda workout_id: "None" if workout_id is None
+                        else workout_options[workout_id],
+                        key=f"point_workout_{point_id}",
+                    )
+                    new_points_earned = st.number_input(
+                        "Points", min_value=1, value=current["PointsEarned"], step=5,
+                        key=f"point_points_{point_id}")
+                    new_reason = st.text_input("Reason", value=current["Reason"],
+                                               key=f"point_reason_{point_id}")
+                    new_date_earned = st.date_input(
+                        "Date earned", value=current["DateEarned"],
+                        key=f"point_date_{point_id}")
+                else:
+                    # No table references activity_point, so nothing else goes.
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_point(
+                        point_id, new_athlete_id, new_activity_id, new_workout_id,
+                        new_points_earned, new_reason, new_date_earned,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_point(point_id))
 
     elif section == "Sports":
         st.header("Sports")
@@ -562,6 +785,92 @@ def main():
                     st.warning("Please confirm deletion.")
                 else:
                     show_result(*remove_sponsor(sponsor_id))
+
+    elif section == "Posts":
+        st.header("Posts")
+
+        st.dataframe(list_posts())
+
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+
+        if not athlete_options:
+            st.warning("Add an athlete before posting or commenting.")
+        else:
+            st.subheader("Add a Post")
+            with st.form("add_post"):
+                post_athlete_id = st.selectbox(
+                    "Posted by",
+                    options=list(athlete_options),
+                    format_func=lambda athlete_id: athlete_options[athlete_id],
+                )
+                content = st.text_area("Content")
+                media_url = st.text_input("Media URL (optional)")
+                submitted = st.form_submit_button("Add Post")
+
+            if submitted:
+                show_result(*add_post(post_athlete_id, content, media_url))
+
+            st.subheader("Comments")
+            post_options = get_post_options()   # {PostID: "Author: first words"}
+
+            if not post_options:
+                st.info("No posts available.")
+            else:
+                # Outside the form so the comment list follows the chosen post.
+                post_id = st.selectbox(
+                    "Post",
+                    options=list(post_options),
+                    format_func=lambda post_id: post_options[post_id],
+                    key="comment_post_id",
+                )
+                st.dataframe(list_comments(post_id))
+
+                with st.form("add_comment"):
+                    commenter_id = st.selectbox(
+                        "Comment as",
+                        options=list(athlete_options),
+                        format_func=lambda athlete_id: athlete_options[athlete_id],
+                    )
+                    comment_text = st.text_area("Comment")
+                    submitted = st.form_submit_button("Add Comment")
+
+                if submitted:
+                    show_result(*add_comment(commenter_id, post_id, comment_text))
+
+                st.subheader("Manage Comments")
+                # The radio sits outside the form so the form re-renders when it changes.
+                mode = st.radio("Action", ["Update", "Delete"], horizontal=True,
+                                key="comment_mode")
+                comment_options = get_comment_options(post_id)   # on the chosen post
+
+                if not comment_options:
+                    st.info("No comments on this post yet.")
+                else:
+                    comment_id = st.selectbox(
+                        "Comment",
+                        options=list(comment_options),
+                        format_func=lambda comment_id: comment_options[comment_id],
+                        key="manage_comment_id",
+                    )
+                    current = get_comment_details(comment_id)
+
+                    with st.form("manage_comment"):
+                        if mode == "Update":
+                            # The ID in the key gives every comment a fresh, pre-filled box.
+                            new_text = st.text_area("Comment", value=current["Text"],
+                                                    key=f"comment_text_{comment_id}")
+                        else:
+                            # No table references comment, so nothing else goes.
+                            confirm = st.checkbox("Confirm deletion")
+                        submitted = st.form_submit_button(mode)
+
+                    if submitted:
+                        if mode == "Update":
+                            show_result(*edit_comment(comment_id, new_text))
+                        elif not confirm:
+                            st.warning("Please confirm deletion.")
+                        else:
+                            show_result(*remove_comment(comment_id))
 
     elif section == "Reward Redemptions":
         st.header("Reward Redemptions")
