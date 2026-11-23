@@ -102,23 +102,28 @@ def get_all_athletes():
 
 
 def get_all_achievements():
+    # JOIN athlete so the table shows who earned it, not just an ID.
     return run_select(
         """
-        SELECT AchievementID, AthleteID, Title, Description, DateEarned
-        FROM achievement
-        ORDER BY AchievementID
+        SELECT ac.AchievementID, ac.AthleteID, a.Name AS Athlete, ac.Title,
+               ac.Description, ac.DateEarned
+        FROM achievement ac
+        JOIN athlete a ON a.AthleteID = ac.AthleteID
+        ORDER BY ac.AchievementID
         """
     )
 
 
 def get_all_activities():
-    # JOIN sport so the table shows the sport's name, not just its ID.
+    # JOIN sport and athlete so the table shows the sport's name and the
+    # organizer's name, not just their IDs.
     rows = run_select(
         """
-        SELECT a.ActivityID, a.AthleteID, s.Name AS Sport, a.Type,
-               a.Date, a.Time, a.Duration, a.Location, a.MaxParticipants
+        SELECT a.ActivityID, a.AthleteID, o.Name AS Organizer, s.Name AS Sport,
+               a.Type, a.Date, a.Time, a.Duration, a.Location, a.MaxParticipants
         FROM activity a
         JOIN sport s ON s.SportID = a.SportID
+        JOIN athlete o ON o.AthleteID = a.AthleteID
         ORDER BY a.ActivityID
         """
     )
@@ -207,6 +212,31 @@ def get_roster(activity_id):
     )
 
 
+def get_all_recruiters():
+    return run_select(
+        """
+        SELECT RecruiterID, Name, Organization, Email
+        FROM recruiter
+        ORDER BY Name, RecruiterID
+        """
+    )
+
+
+def get_interest_for_athlete(athlete_id):
+    """Every recruiter interested in one athlete, with the recruiter's name."""
+    return run_select(
+        """
+        SELECT ra.RecruiterID, r.Name AS Recruiter, r.Organization,
+               ra.InterestDate, ra.Status, ra.Notes
+        FROM recruiter_athlete ra
+        JOIN recruiter r ON r.RecruiterID = ra.RecruiterID
+        WHERE ra.AthleteID = %s
+        ORDER BY ra.InterestDate DESC, r.Name
+        """,
+        (athlete_id,)
+    )
+
+
 def get_all_posts():
     return run_select(
         """
@@ -239,7 +269,7 @@ def get_all_points():
 def get_comments_for_post(post_id):
     return run_select(
         """
-        SELECT c.CommentID, a.Name AS Athlete, c.Text, c.DateCreated
+        SELECT c.CommentID, c.AthleteID, a.Name AS Athlete, c.Text, c.DateCreated
         FROM comment c
         JOIN athlete a ON a.AthleteID = c.AthleteID
         WHERE c.PostID = %s
@@ -375,6 +405,20 @@ def get_participant(activity_id, athlete_id):
         WHERE ActivityID = %s AND AthleteID = %s
         """,
         (activity_id, athlete_id)
+    )
+    return rows[0] if rows else None
+
+
+def get_recruiter_interest(recruiter_id, athlete_id):
+    # recruiter_athlete has a two-column primary key, so both halves
+    # are needed to find one row.
+    rows = run_select(
+        """
+        SELECT RecruiterID, AthleteID, InterestDate, Status, Notes
+        FROM recruiter_athlete
+        WHERE RecruiterID = %s AND AthleteID = %s
+        """,
+        (recruiter_id, athlete_id)
     )
     return rows[0] if rows else None
 
@@ -771,6 +815,46 @@ def delete_participant(activity_id, athlete_id):
             DELETE FROM activity_participant
             WHERE ActivityID = %s AND AthleteID = %s
          """, (activity_id, athlete_id)),
+    ])
+
+
+# ---------------------------------------------------------------
+# recruiter_athlete: a recruiter's interest in an athlete. It has
+# columns of its own (date, status, notes), so it is written from
+# the athlete's page, not from a page of its own.
+# ---------------------------------------------------------------
+
+def insert_recruiter_interest(recruiter_id, athlete_id, status, notes):
+    return run_write(
+        """
+        INSERT INTO recruiter_athlete
+            (RecruiterID, AthleteID, InterestDate, Status, Notes)
+        VALUES (%s, %s, CURDATE(), %s, %s)
+        """,
+        (recruiter_id, athlete_id, status, notes)
+    )
+
+
+def update_recruiter_interest(recruiter_id, athlete_id, status, notes):
+    return run_write(
+        """
+        UPDATE recruiter_athlete
+        SET Status = %s, Notes = %s
+        WHERE RecruiterID = %s AND AthleteID = %s
+        """,
+        (status, notes, recruiter_id, athlete_id)
+    )
+
+
+def delete_recruiter_interest(recruiter_id, athlete_id):
+    """Withdraw a recruiter's interest. Nothing references
+    recruiter_athlete, so this is a single statement inside
+    run_write_many() to keep the usual {table: rows deleted} shape."""
+    return run_write_many([
+        ("recruiter_athlete", """
+            DELETE FROM recruiter_athlete
+            WHERE RecruiterID = %s AND AthleteID = %s
+         """, (recruiter_id, athlete_id)),
     ])
 
 

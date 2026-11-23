@@ -5,6 +5,7 @@ from db.database import (
     insert_achievement, update_achievement, delete_achievement,
 )
 from services.delete_summary import describe_related
+from services.ownership import check_owner
 
 
 def search_achievements(search, date_earned):
@@ -36,10 +37,13 @@ def get_sport_options():
     return {s["SportID"]: s["Name"] for s in get_all_sports()}
 
 
-def get_achievement_options():
-    """Map AchievementID -> title for the manage form's dropdown,
-    so users pick an achievement instead of typing its ID."""
-    return {a["AchievementID"]: a["Title"] for a in get_all_achievements()}
+def get_achievement_options(athlete_id):
+    """Map AchievementID -> title for the manage form's dropdown, limited
+    to the current user's achievements (they may only manage their own)."""
+    return {
+        a["AchievementID"]: a["Title"]
+        for a in get_all_achievements() if a["AthleteID"] == athlete_id
+    }
 
 
 def get_achievement_details(achievement_id):
@@ -84,8 +88,13 @@ def add_achievement(athlete_id, sport_id, title, description, date_earned):
 
 def edit_achievement(achievement_id, athlete_id, sport_id, title, description,
                      date_earned):
-    """Validate the input, then update the achievement. Returns (success, message)."""
+    """Validate the input, then update the achievement. athlete_id is the
+    current user, who must own it. Returns (success, message)."""
     error, (title, description) = check_achievement_input(athlete_id, title, description)
+    if error:
+        return False, error
+    error = check_owner(get_achievement_by_id(achievement_id), athlete_id,
+                        "achievement", "achievements")
     if error:
         return False, error
 
@@ -104,8 +113,14 @@ def edit_achievement(achievement_id, athlete_id, sport_id, title, description,
     return True, f'Updated achievement "{title}".'
 
 
-def remove_achievement(achievement_id):
-    """Delete the achievement. Returns (success, message)."""
+def remove_achievement(achievement_id, athlete_id):
+    """Delete the achievement, if the current user (athlete_id) owns it.
+    Returns (success, message)."""
+    error = check_owner(get_achievement_by_id(achievement_id), athlete_id,
+                        "achievement", "achievements")
+    if error:
+        return False, error
+
     try:
         deleted = delete_achievement(achievement_id)
     except mysql.connector.IntegrityError as e:

@@ -5,6 +5,7 @@ from db.database import (
     insert_workout, update_workout, delete_workout,
 )
 from services.delete_summary import describe_related
+from services.ownership import check_owner
 
 
 def list_workouts():
@@ -12,15 +13,15 @@ def list_workouts():
     return get_all_workouts()
 
 
-def get_workout_options():
-    """Map WorkoutID -> "2026-11-16 - Run (Alex Morgan)" for the manage
-    form's dropdown, so users pick a workout instead of typing an ID."""
+def get_workout_options(athlete_id):
+    """Map WorkoutID -> "2026-11-16 - Run (Alex Morgan)" for the dropdowns,
+    limited to the current user's workouts (they may only manage their own)."""
     return {
         workout["WorkoutID"]: (
             f"{workout['ScheduledDate']} - {workout['WorkoutType']} "
             f"({workout['Athlete']})"
         )
-        for workout in get_all_workouts()
+        for workout in get_all_workouts() if workout["AthleteID"] == athlete_id
     }
 
 
@@ -83,11 +84,15 @@ def add_workout(athlete_id, scheduled_date, workout_type, duration,
 
 def edit_workout(workout_id, athlete_id, scheduled_date, workout_type,
                  duration, completion_status, training_notes):
-    """Validate the input, then update the workout. Returns (success, message)."""
+    """Validate the input, then update the workout. athlete_id is the
+    current user, who must own it. Returns (success, message)."""
     error, (workout_type, completion_status, training_notes) = check_workout_input(
         athlete_id, scheduled_date, workout_type, duration,
         completion_status, training_notes,
     )
+    if error:
+        return False, error
+    error = check_owner(get_workout_by_id(workout_id), athlete_id, "workout", "workouts")
     if error:
         return False, error
 
@@ -107,9 +112,14 @@ def edit_workout(workout_id, athlete_id, scheduled_date, workout_type,
     return True, f'Updated workout "{workout_type}".'
 
 
-def remove_workout(workout_id):
-    """Delete the workout together with the points earned for it,
-    in one transaction. Returns (success, message)."""
+def remove_workout(workout_id, athlete_id):
+    """Delete the workout together with the points earned for it, in one
+    transaction, if the current user (athlete_id) owns it.
+    Returns (success, message)."""
+    error = check_owner(get_workout_by_id(workout_id), athlete_id, "workout", "workouts")
+    if error:
+        return False, error
+
     try:
         deleted = delete_workout(workout_id)
     except mysql.connector.IntegrityError as e:

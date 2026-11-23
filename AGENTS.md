@@ -61,6 +61,7 @@ Three layers, strictly, one package each:
 | `services/*_service.py` | validation, business rules, user-facing messages | Never opens a connection itself |
 | `db/database.py` | all SQL | The **only** file that talks to MySQL |
 | `services/delete_summary.py` | turns delete counts into a sentence | No SQL, no Streamlit |
+| `services/ownership.py` | `check_owner()`: may the current user change this record? | No SQL, no Streamlit |
 
 If you need new data, add a function to `db/database.py`, expose it through a
 service, and call that service from `ui/ath.py`. Never shortcut a layer.
@@ -264,6 +265,7 @@ Keep the wording and the order of words identical across services:
 | Updated | `f'Updated sport "{name}".'` |
 | Deleted | `"Deleted sport." + describe_related(deleted, "sport")` |
 | Record gone | `"No matching sport found."` |
+| Not the owner | `"You can only change your own workouts."` (from `check_owner()`) |
 | Validation | A full sentence naming the field: `"Sport type is required."` |
 
 Never `"Sport deleted."`, never `"That sport no longer exists."` — the verb
@@ -350,6 +352,38 @@ Why each piece is the way it is:
 - **`show_result(success, message)`** handles every outcome: it stores the
   message and reruns on success (so the table above refreshes) and shows
   `st.error` on failure. Do not call `st.success` directly before a rerun.
+
+### The logged-in user (simulated login)
+
+The assignment has no passwords: the athlete picked in the sidebar's
+**"Logged in as"** dropdown is the current user. `main()` reads it once into
+`current_id`, and every page uses that. New users sign up with the sidebar's
+**"New here? Create a profile"** form, which logs them in straight away; the
+Athletes page only browses athletes and manages the user's own profile, so
+no athlete creates or deletes another. Content that belongs to an athlete
+(anything with an `AthleteID` owner column) follows three rules:
+
+1. **Add** saves the new row under `current_id`. There is no "Athlete" /
+   "Posted by" dropdown in an Add form.
+2. **Manage** is titled "Manage My …" and its picker only lists the current
+   user's rows: `get_<thing>_options(athlete_id)` filters by owner.
+3. **The service checks again.** `edit_<thing>(record_id, athlete_id, …)`
+   and `remove_<thing>(record_id, athlete_id)` take the current user and call
+   `check_owner()` from `services/ownership.py` before writing:
+
+   ```python
+   error = check_owner(get_workout_by_id(workout_id), athlete_id,
+                       "workout", "workouts")
+   if error:
+       return False, error
+   ```
+
+   The UI filtering is for convenience; this check is the actual rule.
+
+Tables that belong to nobody (`sport`, `sponsor`, and for now `recruiter`
+and `reward`) keep ordinary Add/Manage pages. Rosters are the one shared
+case: only the activity's organizer manages its participants, and a
+participant may remove themselves (leave).
 
 ---
 
@@ -442,5 +476,7 @@ Conventions:
 5. Are the messages worded exactly as in §6?
 6. Does the new page section look like §7, down to the confirmation checkbox?
 7. Does every import name its package (`db.database`, `services.…`, `ui.…`)?
+7a. If the table has an `AthleteID` owner: does Add use `current_id`, does
+    Manage list only the user's rows, and do edit/remove call `check_owner()`?
 8. Do all the tests pass?
 9. Did you leave the shared database exactly as you found it?
