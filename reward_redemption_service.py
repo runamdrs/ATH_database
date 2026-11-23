@@ -8,14 +8,10 @@ from database import (
 
 
 def list_redemptions():
-    """Return every redemption, joined with its athlete, reward and
-    sponsor so the table shows names instead of IDs."""
     return get_all_redemptions()
 
 
 def list_rewards_for_athlete(athlete_id):
-    """Return every reward with this athlete's points and whether they
-    are eligible for it."""
     return get_rewards_for_athlete(athlete_id)
 
 
@@ -47,8 +43,6 @@ def search_redemptions(search="", status="All", sponsor="All"):
 
 
 def redeem_reward(athlete_id, reward_id):
-    """Check the reward is still eligible, then record the redemption.
-    Returns (success, message)."""
     if not athlete_id:
         return False, "Please choose an athlete."
     if not reward_id:
@@ -69,11 +63,11 @@ def redeem_reward(athlete_id, reward_id):
                 "Eligibility changed before the redemption was saved. "
                 "Refresh the reward list and try again."
             )
-    except mysql.connector.IntegrityError as e:
-        if e.errno == 1452:  # foreign key violation
+    except mysql.connector.IntegrityError as error:
+        if error.errno == 1452:
             return False, "That athlete or reward no longer exists."
-        return False, f"Could not save redemption: {e.msg}"
-    except mysql.connector.Error as e:
-        return False, f"Could not save redemption: {e.msg}"
+        return False, f"Could not save redemption: {error.msg}"
+    except mysql.connector.Error as error:
+        return False, f"Could not save redemption: {error.msg}"
 
     return True, "Redemption request submitted with Pending status."

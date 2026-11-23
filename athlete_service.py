@@ -1,9 +1,6 @@
 import mysql.connector
 
-from database import (
-    get_all_athletes, get_athlete_by_id, insert_athlete, update_athlete, delete_athlete,
-)
-from delete_summary import describe_related
+from database import get_all_athletes, insert_athlete
 
 SKILL_LEVELS = ["Beginner", "Intermediate", "Advanced"]
 
@@ -37,38 +34,19 @@ def get_athlete_options():
     return {a["AthleteID"]: f"{a['Name']} (@{a['Username']})" for a in get_all_athletes()}
 
 
-def get_athlete_details(athlete_id):
-    """Return one athlete's current values (to pre-fill the update form)."""
-    return get_athlete_by_id(athlete_id)
-
-
-def check_athlete_input(name, username, email, location, skill_level):
-    """Shared validation for add and update.
-    Returns (error, values): error is None when the input is fine, and
-    values is the cleaned-up (name, username, email, location)."""
+def add_athlete(name, username, email, location, skill_level):
+    """Validate the input, then insert it. Returns (success, message)."""
     name = (name or "").strip()
     username = (username or "").strip()
     email = (email or "").strip()
     location = (location or "").strip() or None  # optional: blank -> NULL
-    values = (name, username, email, location)
 
     if not name or not username or not email:
-        return "Name, Username and Email are required.", values
+        return False, "Name, Username and Email are required."
     if "@" not in email:
-        return "Please enter a valid email address.", values
+        return False, "Please enter a valid email address."
     if skill_level not in SKILL_LEVELS:
-        return "Skill level must be Beginner, Intermediate or Advanced.", values
-
-    return None, values
-
-
-def add_athlete(name, username, email, location, skill_level):
-    """Validate the input, then insert it. Returns (success, message)."""
-    error, (name, username, email, location) = check_athlete_input(
-        name, username, email, location, skill_level
-    )
-    if error:
-        return False, error
+        return False, "Skill level must be Beginner, Intermediate or Advanced."
 
     try:
         insert_athlete(name, username, email, location, skill_level)
@@ -76,51 +54,5 @@ def add_athlete(name, username, email, location, skill_level):
         if e.errno == 1062:  # duplicate value in a UNIQUE column
             return False, "That username or email is already taken."
         return False, f"Could not add athlete: {e.msg}"
-    except mysql.connector.Error as e:
-        return False, f"Could not add athlete: {e.msg}"
 
-    return True, f'Added athlete "{name}".'
-
-
-
-def edit_athlete(athlete_id, name, username, email, location, skill_level):
-    """Validate the input, then update the athlete. Returns (success, message)."""
-    error, (name, username, email, location) = check_athlete_input(
-        name, username, email, location, skill_level
-    )
-    if error:
-        return False, error
-
-    try:
-        updated = update_athlete(athlete_id, name, username, email, location, skill_level)
-    except mysql.connector.IntegrityError as e:
-        if e.errno == 1062:  # duplicate value in a UNIQUE column
-            return False, "That username or email is already taken."
-        return False, f"Could not update athlete: {e.msg}"
-    except mysql.connector.Error as e:
-        return False, f"Could not update athlete: {e.msg}"
-
-    if updated == 0:
-        return False, "No matching athlete found."
-    return True, f'Updated athlete "{name}".'
-
-
-def remove_athlete(athlete_id):
-    """Delete the athlete together with every record that references
-    them (see delete_athlete), in one transaction.
-    Returns (success, message)."""
-    try:
-        deleted = delete_athlete(athlete_id)
-    except mysql.connector.IntegrityError as e:
-        # The chain deletes the dependent records itself, so 1451 now
-        # only means a table we did not account for points at athletes.
-        if e.errno == 1451:
-            return False, ("Cannot delete this athlete: another record "
-                           "still refers to them.")
-        return False, f"Could not delete athlete: {e.msg}"
-    except mysql.connector.Error as e:
-        return False, f"Could not delete athlete: {e.msg}"
-
-    if deleted["athlete"] == 0:
-        return False, "No matching athlete found."
-    return True, "Deleted athlete." + describe_related(deleted, "athlete")
+    return True, f"Added athlete {name}."
