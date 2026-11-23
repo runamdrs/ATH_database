@@ -1,6 +1,23 @@
+# Virtual environment
 .venv/
 venv/
+
+# Database credentials - never commit these.
+# .streamlit/secrets.example.toml shows the keys without the password.
 .streamlit/secrets.toml
+
+# Editor settings
 .vscode/
+.idea/
+
+# Python bytecode and caches
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini
