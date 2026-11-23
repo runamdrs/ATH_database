@@ -5,8 +5,12 @@ import mysql.connector
 from db.database import (
     get_all_activities, get_activity_by_id,
     insert_activity, update_activity, delete_activity,
+    get_roster, get_participant, insert_participant, update_participant_status,
+    delete_participant,
 )
 from services.delete_summary import describe_related
+
+PARTICIPATION_STATUSES = ["Registered", "Attended", "No-Show", "Cancelled"]
 
 
 def search_activities(search, sport):
@@ -134,3 +138,76 @@ def remove_activity(activity_id):
     if deleted["activity"] == 0:
         return False, "No matching activity found."
     return True, "Deleted activity." + describe_related(deleted, "activity")
+
+
+def list_roster(activity_id):
+    """Return everyone who joined the activity, with their status."""
+    return get_roster(activity_id)
+
+
+def get_participant_options(activity_id):
+    """Map AthleteID -> name for everyone on the activity's roster, so the
+    manage form offers only athletes who really joined."""
+    return {row["AthleteID"]: row["Athlete"] for row in get_roster(activity_id)}
+
+
+def get_participant_details(activity_id, athlete_id):
+    """Return one participant's current values (to pre-fill the status)."""
+    return get_participant(activity_id, athlete_id)
+
+
+def join_activity(activity_id, athlete_id):
+    """Register the athlete for the activity. Returns (success, message)."""
+    if activity_id is None or athlete_id is None:
+        return False, "Please choose an activity and an athlete."
+
+    try:
+        added = insert_participant(activity_id, athlete_id)
+    except mysql.connector.IntegrityError as e:
+        if e.errno == 1062:  # (ActivityID, AthleteID) is the primary key
+            return False, "That athlete has already joined this activity."
+        if e.errno == 1452:  # foreign key violation
+            return False, "That athlete or activity no longer exists."
+        return False, f"Could not join activity: {e.msg}"
+    except mysql.connector.Error as e:
+        return False, f"Could not join activity: {e.msg}"
+
+    # The INSERT ... SELECT adds nothing when the activity is full or gone.
+    if added == 0:
+        return False, "This activity is full or no longer exists."
+    return True, "Joined the activity."
+
+
+def change_participation_status(activity_id, athlete_id, status, points=10):
+    """Set a participant's status. Marking someone Attended also awards
+    `points` Activity Points, once. Returns (success, message)."""
+    if status not in PARTICIPATION_STATUSES:
+        return False, "Please choose a valid status."
+    if points is None or points < 0:
+        return False, "Points must be 0 or more."
+
+    try:
+        changed = update_participant_status(activity_id, athlete_id, status, points)
+    except mysql.connector.Error as e:
+        return False, f"Could not update status: {e.msg}"
+
+    if changed["activity_participant"] == 0:
+        return False, "No matching participant found."
+    if changed.get("activity_point"):
+        return True, f"Updated status to Attended. Awarded {points} points."
+    return True, f"Updated status to {status}."
+
+
+def remove_participant(activity_id, athlete_id):
+    """Take the athlete off the activity. Points already earned for it are
+    kept. Returns (success, message)."""
+    try:
+        deleted = delete_participant(activity_id, athlete_id)
+    except mysql.connector.Error as e:
+        return False, f"Could not delete participation entry: {e.msg}"
+
+    if deleted["activity_participant"] == 0:
+        return False, "No matching participation entry found."
+    return True, "Deleted participation entry." + describe_related(
+        deleted, "activity_participant"
+    )

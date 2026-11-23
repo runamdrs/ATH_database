@@ -8,8 +8,11 @@ import mysql.connector
 from streamlit.testing.v1 import AppTest
 
 from db import database
+from services import activity_service
 from services import athlete_service
 from services import delete_summary
+from services import point_service
+from services import post_service
 from services import reward_redemption_service
 from services import sponsor_service
 from services import sport_service
@@ -403,6 +406,179 @@ class CascadingDeleteTests(unittest.TestCase):
         )
 
 
+class AthleteSportTests(unittest.TestCase):
+    def test_new_athlete_and_sports_are_saved_in_one_transaction(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            database.insert_athlete("Ann", "ann", "ann@example.com", None,
+                                    "Beginner", [2, 5])
+
+        queries = [query for query, _ in connection.statements]
+        self.assertIn("INSERT INTO athlete ", queries[0])
+        # The links point at the athlete MySQL just created.
+        self.assertEqual(len(queries), 3)
+        for query in queries[1:]:
+            self.assertIn("LAST_INSERT_ID()", query)
+        self.assertEqual([params for _, params in connection.statements[1:]],
+                         [(2,), (5,)])
+        self.assertTrue(connection.committed)
+
+    def test_updating_an_athlete_replaces_their_sports(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            database.update_athlete(7, "Ann", "ann", "ann@example.com", None,
+                                    "Beginner", [3])
+
+        queries = [query for query, _ in connection.statements]
+        self.assertIn("UPDATE athlete", queries[0])
+        self.assertIn("DELETE FROM athlete_sport", queries[1])
+        self.assertIn("INSERT INTO athlete_sport", queries[2])
+        self.assertEqual(connection.statements[2][1], (7, 3))
+        self.assertTrue(connection.committed)
+
+    def test_edit_reports_a_missing_athlete(self):
+        with patch("services.athlete_service.update_athlete",
+                   return_value={"athlete": 0, "athlete_sport": 0}):
+            result = athlete_service.edit_athlete(
+                999, "Ann", "ann", "ann@example.com", "", "Beginner", [1],
+            )
+        self.assertEqual(result, (False, "No matching athlete found."))
+
+
+class ActivityParticipantTests(unittest.TestCase):
+    def test_full_activity_cannot_be_joined(self):
+        with patch("services.activity_service.insert_participant", return_value=0):
+            result = activity_service.join_activity(3, 7)
+        self.assertEqual(result, (False, "This activity is full or no longer exists."))
+
+    def test_joining_twice_is_reported(self):
+        duplicate = mysql.connector.IntegrityError(msg="dup", errno=1062)
+        with patch("services.activity_service.insert_participant",
+                   side_effect=duplicate):
+            success, message = activity_service.join_activity(3, 7)
+        self.assertFalse(success)
+        self.assertEqual(message, "That athlete has already joined this activity.")
+
+    def test_attended_awards_points_in_the_same_transaction(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            changed = database.update_participant_status(3, 7, "Attended", 10)
+
+        queries = [query for query, _ in connection.statements]
+        self.assertIn("UPDATE activity_participant", queries[0])
+        self.assertIn("INSERT INTO activity_point", queries[1])
+        self.assertIn("NOT EXISTS", queries[1])
+        self.assertTrue(connection.committed)
+        self.assertEqual(changed, {"activity_participant": 1, "activity_point": 1})
+
+    def test_other_statuses_award_nothing(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            database.update_participant_status(3, 7, "No-Show", 10)
+        self.assertEqual(len(connection.statements), 1)
+
+    def test_status_messages(self):
+        with patch("services.activity_service.update_participant_status",
+                   return_value={"activity_participant": 1, "activity_point": 1}):
+            self.assertEqual(
+                activity_service.change_participation_status(3, 7, "Attended", 10),
+                (True, "Updated status to Attended. Awarded 10 points."),
+            )
+        with patch("services.activity_service.update_participant_status",
+                   return_value={"activity_participant": 0}):
+            self.assertEqual(
+                activity_service.change_participation_status(3, 7, "No-Show", 10),
+                (False, "No matching participant found."),
+            )
+        self.assertEqual(
+            activity_service.change_participation_status(3, 7, "Lost", 10),
+            (False, "Please choose a valid status."),
+        )
+
+
+    def test_removing_a_participant(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            database.delete_participant(3, 7)
+        self.assertEqual(connection.tables(), ["activity_participant"])
+        self.assertEqual(connection.statements[0][1], (3, 7))
+
+        with patch("services.activity_service.delete_participant",
+                   return_value={"activity_participant": 0}):
+            self.assertEqual(
+                activity_service.remove_participant(3, 99),
+                (False, "No matching participation entry found."),
+            )
+
+
+class PointTests(unittest.TestCase):
+    def test_point_validation_and_insert(self):
+        today = datetime.date(2026, 11, 23)
+        self.assertEqual(point_service.add_point(1, None, None, 0, "Bonus", today),
+                         (False, "Points must be at least 1."))
+        self.assertEqual(point_service.add_point(1, None, None, 5, "  ", today),
+                         (False, "Reason is required."))
+        with patch("services.point_service.insert_point") as insert_point:
+            result = point_service.add_point(1, None, None, 5, "  Bonus  ", today)
+        self.assertEqual(result, (True, 'Added points record "Bonus".'))
+        insert_point.assert_called_once_with(1, None, None, 5, "Bonus", today)
+
+    def test_workout_points_must_go_to_that_workouts_athlete(self):
+        with patch("services.point_service.get_workout_by_id",
+                   return_value={"WorkoutID": 2, "AthleteID": 8}), \
+             patch("services.point_service.insert_point") as insert_point:
+            result = point_service.add_point(1, None, 2, 5, "Run", None)
+        self.assertEqual(result, (False, "That workout belongs to another athlete."))
+        insert_point.assert_not_called()
+
+    def test_point_edit_and_delete_report_missing_records(self):
+        with patch("services.point_service.update_point", return_value=0):
+            self.assertEqual(
+                point_service.edit_point(99, 1, None, None, 5, "Bonus", None),
+                (False, "No matching points record found."),
+            )
+        with patch("services.point_service.delete_point",
+                   return_value={"activity_point": 1}):
+            self.assertEqual(point_service.remove_point(1),
+                             (True, "Deleted points record."))
+
+
+class PostTests(unittest.TestCase):
+    def test_post_validation_and_insert(self):
+        self.assertEqual(post_service.add_post(1, "   ", ""),
+                         (False, "Post content is required."))
+        with patch("services.post_service.insert_post") as insert_post:
+            result = post_service.add_post(1, "  Great run!  ", "  ")
+        self.assertEqual(result, (True, "Added post."))
+        # Text is trimmed and an empty optional URL is stored as NULL.
+        insert_post.assert_called_once_with(1, "Great run!", None)
+
+    def test_comment_edit_and_delete(self):
+        self.assertEqual(post_service.edit_comment(1, "  "),
+                         (False, "Comment text is required."))
+        with patch("services.post_service.update_comment", return_value=0):
+            self.assertEqual(post_service.edit_comment(99, "Hi"),
+                             (False, "No matching comment found."))
+        with patch("services.post_service.delete_comment",
+                   return_value={"comment": 1}):
+            self.assertEqual(post_service.remove_comment(1),
+                             (True, "Deleted comment."))
+
+    def test_deleting_a_comment_is_one_bound_statement(self):
+        connection = RecordingConnection()
+        with patch("db.database.get_connection", return_value=connection):
+            database.delete_comment(4)
+        self.assertEqual(connection.tables(), ["comment"])
+        self.assertEqual(connection.statements[0][1], (4,))
+        self.assertTrue(connection.committed)
+
+    def test_comment_on_a_deleted_post_is_reported(self):
+        missing = mysql.connector.IntegrityError(msg="fk", errno=1452)
+        with patch("services.post_service.insert_comment", side_effect=missing):
+            result = post_service.add_comment(1, 99, "Nice")
+        self.assertEqual(result, (False, "That athlete or post no longer exists."))
+
+
 class StreamlitPageTests(unittest.TestCase):
     def test_all_navigation_pages_render_without_database(self):
         athlete = {
@@ -424,6 +600,40 @@ class StreamlitPageTests(unittest.TestCase):
             "TrainingNotes": None,
         }
         sport = {"SportID": 1, "Name": "Soccer", "Type": "Team"}
+        post = {
+            "PostID": 1,
+            "Athlete": "Test Athlete",
+            "Content": "First post",
+            "DateCreated": datetime.datetime(2026, 11, 16, 9, 0),
+            "MediaURL": None,
+            "Comments": 1,
+        }
+        comment = {
+            "CommentID": 1, "AthleteID": 1, "PostID": 1, "Athlete": "Test Athlete",
+            "Text": "Nice!", "DateCreated": datetime.datetime(2026, 11, 16, 10, 0),
+        }
+        activity_row = {
+            "ActivityID": 1, "AthleteID": 1, "Sport": "Soccer", "Type": "Practice",
+            "Date": datetime.date(2026, 11, 20), "Time": "09:00", "Duration": 60,
+            "Location": None, "MaxParticipants": None,
+        }
+        activity = {
+            "ActivityID": 1, "AthleteID": 1, "SportID": 1, "Type": "Practice",
+            "Date": datetime.date(2026, 11, 20),
+            "Time": datetime.timedelta(hours=9), "Duration": 60,
+            "Location": None, "MaxParticipants": None,
+        }
+        participant = {
+            "ActivityID": 1, "AthleteID": 1, "Athlete": "Test Athlete",
+            "JoinDate": datetime.date(2026, 11, 16),
+            "ParticipationStatus": "Registered",
+        }
+        point = {
+            "PointTransactionID": 1, "AthleteID": 1, "Athlete": "Test Athlete",
+            "ActivityID": 1, "WorkoutID": None, "Activity": "Practice",
+            "Workout": None, "PointsEarned": 10, "Reason": "Attended activity",
+            "DateEarned": datetime.datetime(2026, 11, 20, 11, 0),
+        }
         sponsor = {
             "SponsorID": 1,
             "Company": "Test Sponsor",
@@ -443,9 +653,23 @@ class StreamlitPageTests(unittest.TestCase):
         patches = [
             patch("services.athlete_service.get_all_athletes", return_value=[athlete]),
             patch("services.athlete_service.get_athlete_by_id", return_value=athlete),
+            patch("services.athlete_service.get_sport_ids_for_athlete", return_value=[1]),
+            patch("services.post_service.get_all_posts", return_value=[post]),
+            patch("services.post_service.get_comments_for_post", return_value=[comment]),
+            patch("services.post_service.get_comment_by_id", return_value=comment),
+            # A fresh copy per call, like the database: get_activity_details
+            # converts Time in place.
+            patch("services.activity_service.get_activity_by_id",
+                  side_effect=lambda activity_id: dict(activity)),
+            patch("services.activity_service.get_roster", return_value=[participant]),
+            patch("services.activity_service.get_participant", return_value=participant),
+            patch("services.point_service.get_all_points", return_value=[point]),
+            patch("services.point_service.get_point_by_id",
+                  side_effect=lambda point_id: dict(point)),
             patch("services.achievement_service.get_all_achievements", return_value=[]),
             patch("services.achievement_service.get_all_sports", return_value=[sport]),
-            patch("services.activity_service.get_all_activities", return_value=[]),
+            patch("services.activity_service.get_all_activities",
+                  side_effect=lambda: [dict(activity_row)]),
             patch("services.workout_service.get_all_workouts", return_value=[workout]),
             patch("services.workout_service.get_workout_by_id", return_value=workout),
             patch("services.sport_service.get_all_sports", return_value=[sport]),
@@ -475,8 +699,8 @@ class StreamlitPageTests(unittest.TestCase):
             self.assertEqual(len(app.exception), 0)
 
             for section in (
-                "Achievements", "Activities", "Workouts",
-                "Sports", "Sponsors", "Reward Redemptions",
+                "Achievements", "Activities", "Workouts", "Points",
+                "Sports", "Sponsors", "Posts", "Reward Redemptions",
             ):
                 app.sidebar.radio[0].set_value(section).run()
                 self.assertEqual(
@@ -489,6 +713,8 @@ class StreamlitPageTests(unittest.TestCase):
             for section, radio_key in (
                 ("Athletes", "athlete_mode"), ("Workouts", "workout_mode"),
                 ("Sports", "sport_mode"), ("Sponsors", "sponsor_mode"),
+                ("Points", "point_mode"), ("Posts", "comment_mode"),
+                ("Activities", "participant_mode"),
             ):
                 app.sidebar.radio[0].set_value(section).run()
                 app.radio(key=radio_key).set_value("Delete").run()

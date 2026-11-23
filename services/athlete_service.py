@@ -1,7 +1,8 @@
 import mysql.connector
 
 from db.database import (
-    get_all_athletes, get_athlete_by_id, insert_athlete, update_athlete, delete_athlete,
+    get_all_athletes, get_athlete_by_id, get_sport_ids_for_athlete,
+    insert_athlete, update_athlete, delete_athlete,
 )
 from services.delete_summary import describe_related
 
@@ -42,6 +43,12 @@ def get_athlete_details(athlete_id):
     return get_athlete_by_id(athlete_id)
 
 
+def get_athlete_sport_ids(athlete_id):
+    """Return the SportIDs linked to the athlete (to pre-fill the sports
+    picker on the update form)."""
+    return get_sport_ids_for_athlete(athlete_id)
+
+
 def check_athlete_input(name, username, email, location, skill_level):
     """Shared validation for add and update.
     Returns (error, values): error is None when the input is fine, and
@@ -62,8 +69,9 @@ def check_athlete_input(name, username, email, location, skill_level):
     return None, values
 
 
-def add_athlete(name, username, email, location, skill_level):
-    """Validate the input, then insert it. Returns (success, message)."""
+def add_athlete(name, username, email, location, skill_level, sport_ids=()):
+    """Validate the input, then insert the athlete and their sport links.
+    Returns (success, message)."""
     error, (name, username, email, location) = check_athlete_input(
         name, username, email, location, skill_level
     )
@@ -71,10 +79,12 @@ def add_athlete(name, username, email, location, skill_level):
         return False, error
 
     try:
-        insert_athlete(name, username, email, location, skill_level)
+        insert_athlete(name, username, email, location, skill_level, sport_ids)
     except mysql.connector.IntegrityError as e:
         if e.errno == 1062:  # duplicate value in a UNIQUE column
             return False, "That username or email is already taken."
+        if e.errno == 1452:  # a chosen sport was deleted meanwhile
+            return False, "That sport no longer exists."
         return False, f"Could not add athlete: {e.msg}"
     except mysql.connector.Error as e:
         return False, f"Could not add athlete: {e.msg}"
@@ -83,8 +93,10 @@ def add_athlete(name, username, email, location, skill_level):
 
 
 
-def edit_athlete(athlete_id, name, username, email, location, skill_level):
-    """Validate the input, then update the athlete. Returns (success, message)."""
+def edit_athlete(athlete_id, name, username, email, location, skill_level,
+                 sport_ids=()):
+    """Validate the input, then update the athlete and replace their
+    sport links. Returns (success, message)."""
     error, (name, username, email, location) = check_athlete_input(
         name, username, email, location, skill_level
     )
@@ -92,15 +104,18 @@ def edit_athlete(athlete_id, name, username, email, location, skill_level):
         return False, error
 
     try:
-        updated = update_athlete(athlete_id, name, username, email, location, skill_level)
+        updated = update_athlete(athlete_id, name, username, email, location,
+                                 skill_level, sport_ids)
     except mysql.connector.IntegrityError as e:
         if e.errno == 1062:  # duplicate value in a UNIQUE column
             return False, "That username or email is already taken."
+        if e.errno == 1452:  # the athlete or a chosen sport is gone
+            return False, "That athlete or sport no longer exists."
         return False, f"Could not update athlete: {e.msg}"
     except mysql.connector.Error as e:
         return False, f"Could not update athlete: {e.msg}"
 
-    if updated == 0:
+    if updated["athlete"] == 0:
         return False, "No matching athlete found."
     return True, f'Updated athlete "{name}".'
 
