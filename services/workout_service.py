@@ -1,10 +1,10 @@
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_workouts, get_workout_by_id,
     insert_workout, update_workout, delete_workout,
 )
-from delete_summary import describe_related
+from services.delete_summary import describe_related
 
 
 def list_workouts():

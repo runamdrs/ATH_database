@@ -1,6 +1,6 @@
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_redemptions,
     get_rewards_for_athlete,
     insert_eligible_redemption,

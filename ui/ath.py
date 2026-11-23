@@ -1,0 +1,611 @@
+import streamlit as st
+
+from services.athlete_service import (
+    search_athletes, get_skill_levels, get_athlete_options, get_athlete_details,
+    add_athlete, edit_athlete, remove_athlete, SKILL_LEVELS,
+)
+from services.achievement_service import (
+    search_achievements, get_dates_earned, get_achievement_options,
+    get_achievement_details, add_achievement, edit_achievement, remove_achievement,
+)
+from services.activity_service import (
+    search_activities, get_activity_sports, get_activity_options, get_activity_details,
+    add_activity, edit_activity, remove_activity,
+)
+from services.workout_service import (
+    list_workouts, get_workout_options, get_workout_details,
+    add_workout, edit_workout, remove_workout,
+)
+from services.sport_service import (
+    list_sports, get_sport_options, get_sport_details,
+    add_sport, edit_sport, remove_sport,
+)
+from services.sponsor_service import (
+    list_sponsors, get_sponsor_options, get_sponsor_details,
+    add_sponsor, edit_sponsor, remove_sponsor,
+)
+from services.reward_redemption_service import (
+    list_redemptions, list_rewards_for_athlete, redeem_reward,
+)
+
+
+def show_result(success, message):
+    """On success, remember the message and rerun so the table above
+    refreshes with the new row. (st.success before st.rerun would be
+    wiped out by the rerun, so the message is shown on the next run.)"""
+    if success:
+        st.session_state["flash"] = message
+        st.rerun()
+    else:
+        st.error(message)
+
+
+def main():
+    """Draw the whole ATH interface. app.py in the project root is the
+    entry point that calls this, so the interface lives in one place
+    and launching the app does not depend on this file's location."""
+    st.title("ATH")
+    st.write(
+        "A platform where athletes build profiles, log workouts, share achievements, "
+        "find people to train or play with, and earn Activity Points toward sponsor rewards."
+    )
+
+    section = st.sidebar.radio(
+        "Browse",
+        [
+            "Athletes", "Achievements", "Activities", "Workouts",
+            "Sports", "Sponsors", "Reward Redemptions",
+        ],
+    )
+
+    if "flash" in st.session_state:
+        st.success(st.session_state.pop("flash"))
+
+    if section == "Athletes":
+        st.header("Find Athletes")
+
+        search = st.text_input("Search by name or username")
+        skill_level = st.selectbox("Skill level", get_skill_levels())
+
+        results = search_athletes(search, skill_level)
+
+        st.dataframe(results)
+        st.write(f"{len(results)} athlete(s) found.")
+
+        st.subheader("Add an Athlete")
+        with st.form("add_athlete"):
+            name = st.text_input("Name")
+            username = st.text_input("Username")
+            email = st.text_input("Email")
+            location = st.text_input("Location (optional)")
+            new_skill_level = st.selectbox("Skill level", SKILL_LEVELS)
+            submitted = st.form_submit_button("Add Athlete")
+
+        if submitted:
+            show_result(*add_athlete(name, username, email, location, new_skill_level))
+
+        st.subheader("Manage Athletes")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="athlete_mode")
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+
+        if not athlete_options:
+            st.info("No athletes available.")
+        else:
+            # The picker is outside the form too: widgets inside a form don't
+            # rerun the page, so the fields below couldn't be pre-filled with
+            # the chosen athlete's values. Users pick a name, never type an ID.
+            athlete_id = st.selectbox(
+                "Athlete",
+                options=list(athlete_options),
+                format_func=lambda athlete_id: athlete_options[athlete_id],
+                key="manage_athlete_id",
+            )
+            current = get_athlete_details(athlete_id)
+
+            with st.form("manage_athlete"):
+                if mode == "Update":
+                    # The ID in each key gives every athlete fresh, pre-filled widgets.
+                    name = st.text_input("Name", value=current["Name"],
+                                         key=f"athlete_name_{athlete_id}")
+                    username = st.text_input("Username", value=current["Username"],
+                                             key=f"athlete_username_{athlete_id}")
+                    email = st.text_input("Email", value=current["Email"],
+                                          key=f"athlete_email_{athlete_id}")
+                    location = st.text_input("Location (optional)", value=current["Location"] or "",
+                                             key=f"athlete_location_{athlete_id}")
+                    new_skill_level = st.selectbox(
+                        "Skill level",
+                        SKILL_LEVELS,
+                        index=SKILL_LEVELS.index(current["SkillLevel"])
+                        if current["SkillLevel"] in SKILL_LEVELS else 0,
+                        key=f"athlete_skill_{athlete_id}",
+                    )
+                else:
+                    # Deleting an athlete also deletes everything that
+                    # references them, so the checkbox spells that out.
+                    st.warning(
+                        "Deleting this athlete also deletes their activities, "
+                        "workouts, achievements, posts, comments, points, "
+                        "redemptions and sport/recruiter links."
+                    )
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_athlete(
+                        athlete_id, name, username, email, location, new_skill_level,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_athlete(athlete_id))
+
+    elif section == "Achievements":
+        st.header("Browse Achievements")
+
+        search = st.text_input("Search by achievement title")
+        date_earned = st.selectbox("Date earned", get_dates_earned())
+
+        results = search_achievements(search, date_earned)
+
+        st.dataframe(results)
+        st.write(f"{len(results)} achievement(s) found.")
+
+        st.subheader("Add an Achievement")
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+        sport_options = get_sport_options()       # {SportID: "Sport name"}
+
+        with st.form("add_achievement"):
+            title = st.text_input("Title")
+            description = st.text_area("Description (optional)")
+            # The dropdown shows names but returns the AthleteID, so only
+            # athletes that really exist can be chosen (foreign key safe).
+            athlete_id = st.selectbox(
+                "Athlete",
+                options=list(athlete_options),
+                format_func=lambda athlete_id: athlete_options[athlete_id],
+            )
+            sport_id = st.selectbox(
+                "Sport",
+                options=[None] + list(sport_options),
+                format_func=lambda sport_id: "None" if sport_id is None else sport_options[sport_id],
+            )
+            new_date_earned = st.date_input("Date earned")
+            submitted = st.form_submit_button("Add Achievement")
+
+        if submitted:
+            show_result(*add_achievement(athlete_id, sport_id, title, description, new_date_earned))
+
+        st.subheader("Manage Achievements")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="achievement_mode")
+        achievement_options = get_achievement_options()   # {AchievementID: "Title"}
+
+        if not achievement_options:
+            st.info("No achievements available.")
+        else:
+            # Outside the form so picking another achievement re-fills the fields.
+            achievement_id = st.selectbox(
+                "Achievement",
+                options=list(achievement_options),
+                format_func=lambda achievement_id: achievement_options[achievement_id],
+                key="manage_achievement_id",
+            )
+            current = get_achievement_details(achievement_id)
+            sport_choices = [None] + list(sport_options)
+
+            with st.form("manage_achievement"):
+                if mode == "Update":
+                    # The ID in each key gives every achievement fresh, pre-filled widgets.
+                    title = st.text_input("Title", value=current["Title"],
+                                          key=f"achievement_title_{achievement_id}")
+                    description = st.text_area("Description (optional)",
+                                               value=current["Description"] or "",
+                                               key=f"achievement_description_{achievement_id}")
+                    athlete_id = st.selectbox(
+                        "Athlete",
+                        options=list(athlete_options),
+                        index=list(athlete_options).index(current["AthleteID"]),
+                        format_func=lambda athlete_id: athlete_options[athlete_id],
+                        key=f"achievement_athlete_{achievement_id}",
+                    )
+                    sport_id = st.selectbox(
+                        "Sport",
+                        options=sport_choices,
+                        index=sport_choices.index(current["SportID"])
+                        if current["SportID"] in sport_choices else 0,
+                        format_func=lambda sport_id: "None" if sport_id is None else sport_options[sport_id],
+                        key=f"achievement_sport_{achievement_id}",
+                    )
+                    new_date_earned = st.date_input("Date earned", value=current["DateEarned"],
+                                                    key=f"achievement_date_{achievement_id}")
+                else:
+                    # No table references achievement, so nothing else goes.
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_achievement(
+                        achievement_id, athlete_id, sport_id, title, description, new_date_earned,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_achievement(achievement_id))
+
+    elif section == "Activities":
+        st.header("Browse Activities")
+
+        search = st.text_input("Search by activity type or location")
+        sport = st.selectbox("Sport", get_activity_sports())
+
+        results = search_activities(search, sport)
+
+        st.dataframe(results)
+        st.write(f"{len(results)} activity(ies) found.")
+
+        st.subheader("Add an Activity")
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+        sport_options = get_sport_options()       # {SportID: "Sport name"}
+
+        with st.form("add_activity"):
+            activity_type = st.text_input("Activity type (e.g. Soccer Practice)")
+            # Dropdowns show names but return real IDs (foreign key safe).
+            athlete_id = st.selectbox(
+                "Organized by",
+                options=list(athlete_options),
+                format_func=lambda athlete_id: athlete_options[athlete_id],
+            )
+            # SportID is NOT NULL for activities, so there is no "None" option.
+            sport_id = st.selectbox(
+                "Sport",
+                options=list(sport_options),
+                format_func=lambda sport_id: sport_options[sport_id],
+            )
+            date = st.date_input("Date")
+            time = st.time_input("Start time")
+            duration = st.number_input("Duration (minutes)", min_value=1, value=60, step=5)
+            location = st.text_input("Location (optional)")
+            # value=None leaves the box empty, which is stored as NULL.
+            max_participants = st.number_input(
+                "Max participants (optional)", min_value=1, value=None, step=1
+            )
+            submitted = st.form_submit_button("Add Activity")
+
+        if submitted:
+            show_result(*add_activity(
+                athlete_id, sport_id, activity_type, date, time, duration,
+                location, max_participants,
+            ))
+
+        st.subheader("Manage Activities")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="activity_mode")
+        activity_options = get_activity_options()   # {ActivityID: "Type on Date"}
+
+        if not activity_options:
+            st.info("No activities available.")
+        else:
+            # Outside the form so picking another activity re-fills the fields.
+            activity_id = st.selectbox(
+                "Activity",
+                options=list(activity_options),
+                format_func=lambda activity_id: activity_options[activity_id],
+                key="manage_activity_id",
+            )
+            current = get_activity_details(activity_id)
+
+            with st.form("manage_activity"):
+                if mode == "Update":
+                    # The ID in each key gives every activity fresh, pre-filled widgets.
+                    activity_type = st.text_input("Activity type (e.g. Soccer Practice)",
+                                                  value=current["Type"],
+                                                  key=f"activity_type_{activity_id}")
+                    athlete_id = st.selectbox(
+                        "Organized by",
+                        options=list(athlete_options),
+                        index=list(athlete_options).index(current["AthleteID"]),
+                        format_func=lambda athlete_id: athlete_options[athlete_id],
+                        key=f"activity_athlete_{activity_id}",
+                    )
+                    sport_id = st.selectbox(
+                        "Sport",
+                        options=list(sport_options),
+                        index=list(sport_options).index(current["SportID"]),
+                        format_func=lambda sport_id: sport_options[sport_id],
+                        key=f"activity_sport_{activity_id}",
+                    )
+                    date = st.date_input("Date", value=current["Date"],
+                                         key=f"activity_date_{activity_id}")
+                    time = st.time_input("Start time", value=current["Time"],
+                                         key=f"activity_time_{activity_id}")
+                    duration = st.number_input("Duration (minutes)", min_value=1,
+                                               value=current["Duration"], step=5,
+                                               key=f"activity_duration_{activity_id}")
+                    location = st.text_input("Location (optional)", value=current["Location"] or "",
+                                             key=f"activity_location_{activity_id}")
+                    max_participants = st.number_input(
+                        "Max participants (optional)", min_value=1,
+                        value=current["MaxParticipants"], step=1,
+                        key=f"activity_max_{activity_id}",
+                    )
+                else:
+                    st.warning(
+                        "Deleting this activity also deletes its participation "
+                        "entries and the points earned for it."
+                    )
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_activity(
+                        activity_id, athlete_id, sport_id, activity_type, date, time,
+                        duration, location, max_participants,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_activity(activity_id))
+
+    elif section == "Workouts":
+        st.header("Workouts")
+
+        st.dataframe(list_workouts())
+
+        athlete_options = get_athlete_options()   # {AthleteID: "Name (@Username)"}
+
+        if not athlete_options:
+            st.warning("Add an athlete before creating a workout.")
+        else:
+            st.subheader("Add a Workout")
+            with st.form("add_workout"):
+                athlete_id = st.selectbox(
+                    "Athlete",
+                    options=list(athlete_options),
+                    format_func=lambda athlete_id: athlete_options[athlete_id],
+                )
+                scheduled_date = st.date_input("Scheduled date")
+                workout_type = st.text_input("Workout type")
+                duration = st.number_input("Duration in minutes (optional)",
+                                           min_value=1, value=None, step=1)
+                completion_status = st.text_input("Completion status")
+                training_notes = st.text_area("Training notes (optional)")
+                submitted = st.form_submit_button("Add Workout")
+
+            if submitted:
+                show_result(*add_workout(
+                    athlete_id, scheduled_date, workout_type, duration,
+                    completion_status, training_notes,
+                ))
+
+        st.subheader("Manage Workouts")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="workout_mode")
+        workout_options = get_workout_options()   # {WorkoutID: "date - type (athlete)"}
+
+        if not workout_options:
+            st.info("No workouts available.")
+        else:
+            # The picker is outside the form too: widgets inside a form don't
+            # rerun the page, so the fields below couldn't be pre-filled with
+            # the chosen workout's values. Users pick a workout, never type an ID.
+            workout_id = st.selectbox(
+                "Workout",
+                options=list(workout_options),
+                format_func=lambda workout_id: workout_options[workout_id],
+                key="manage_workout_id",
+            )
+            current = get_workout_details(workout_id)
+
+            with st.form("manage_workout"):
+                if mode == "Update":
+                    # The ID in each key gives every workout fresh, pre-filled widgets.
+                    new_athlete_id = st.selectbox(
+                        "Athlete",
+                        options=list(athlete_options),
+                        index=list(athlete_options).index(current["AthleteID"]),
+                        format_func=lambda athlete_id: athlete_options[athlete_id],
+                        key=f"workout_athlete_{workout_id}",
+                    )
+                    new_scheduled_date = st.date_input(
+                        "Scheduled date", value=current["ScheduledDate"],
+                        key=f"workout_date_{workout_id}")
+                    new_workout_type = st.text_input(
+                        "Workout type", value=current["WorkoutType"],
+                        key=f"workout_type_{workout_id}")
+                    new_duration = st.number_input(
+                        "Duration in minutes (optional)", min_value=1,
+                        value=current["Duration"], step=1,
+                        key=f"workout_duration_{workout_id}")
+                    new_completion_status = st.text_input(
+                        "Completion status", value=current["CompletionStatus"],
+                        key=f"workout_status_{workout_id}")
+                    new_training_notes = st.text_area(
+                        "Training notes (optional)",
+                        value=current["TrainingNotes"] or "",
+                        key=f"workout_notes_{workout_id}")
+                else:
+                    st.warning(
+                        "Deleting this workout also deletes the points earned for it."
+                    )
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_workout(
+                        workout_id, new_athlete_id, new_scheduled_date,
+                        new_workout_type, new_duration, new_completion_status,
+                        new_training_notes,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_workout(workout_id))
+
+    elif section == "Sports":
+        st.header("Sports")
+
+        st.dataframe(list_sports())
+
+        st.subheader("Add a Sport")
+        with st.form("add_sport"):
+            name = st.text_input("Sport name")
+            sport_type = st.text_input("Type")
+            submitted = st.form_submit_button("Add Sport")
+
+        if submitted:
+            show_result(*add_sport(name, sport_type))
+
+        st.subheader("Manage Sports")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="sport_mode")
+        sport_options = get_sport_options()   # {SportID: "Soccer"}
+
+        if not sport_options:
+            st.info("No sports available.")
+        else:
+            sport_id = st.selectbox(
+                "Sport",
+                options=list(sport_options),
+                format_func=lambda sport_id: sport_options[sport_id],
+                key="manage_sport_id",
+            )
+            current = get_sport_details(sport_id)
+
+            with st.form("manage_sport"):
+                if mode == "Update":
+                    # The ID in each key gives every sport fresh, pre-filled widgets.
+                    new_name = st.text_input("Sport name", value=current["Name"],
+                                             key=f"sport_name_{sport_id}")
+                    new_sport_type = st.text_input("Type", value=current["Type"],
+                                                   key=f"sport_type_{sport_id}")
+                else:
+                    st.warning(
+                        "Deleting this sport also deletes its activities, "
+                        "achievements and athlete links."
+                    )
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_sport(sport_id, new_name, new_sport_type))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_sport(sport_id))
+
+    elif section == "Sponsors":
+        st.header("Sponsors")
+
+        st.dataframe(list_sponsors())
+
+        st.subheader("Add a Sponsor")
+        with st.form("add_sponsor"):
+            company = st.text_input("Company")
+            sponsor_type = st.text_input("Sponsor type (optional)")
+            contact_information = st.text_input("Contact information (optional)")
+            submitted = st.form_submit_button("Add Sponsor")
+
+        if submitted:
+            show_result(*add_sponsor(company, sponsor_type, contact_information))
+
+        st.subheader("Manage Sponsors")
+        # The radio sits outside the form so the form re-renders when it changes.
+        mode = st.radio("Action", ["Update", "Delete"], horizontal=True, key="sponsor_mode")
+        sponsor_options = get_sponsor_options()   # {SponsorID: "Peak Performance"}
+
+        if not sponsor_options:
+            st.info("No sponsors available.")
+        else:
+            sponsor_id = st.selectbox(
+                "Sponsor",
+                options=list(sponsor_options),
+                format_func=lambda sponsor_id: sponsor_options[sponsor_id],
+                key="manage_sponsor_id",
+            )
+            current = get_sponsor_details(sponsor_id)
+
+            with st.form("manage_sponsor"):
+                if mode == "Update":
+                    # The ID in each key gives every sponsor fresh, pre-filled widgets.
+                    new_company = st.text_input("Company", value=current["Company"],
+                                                key=f"sponsor_company_{sponsor_id}")
+                    new_sponsor_type = st.text_input(
+                        "Sponsor type (optional)",
+                        value=current["SponsorType"] or "",
+                        key=f"sponsor_type_{sponsor_id}")
+                    new_contact_information = st.text_input(
+                        "Contact information (optional)",
+                        value=current["ContactInformation"] or "",
+                        key=f"sponsor_contact_{sponsor_id}")
+                else:
+                    st.warning(
+                        "Deleting this sponsor also deletes its rewards and "
+                        "their redemptions."
+                    )
+                    confirm = st.checkbox("Confirm deletion")
+                submitted = st.form_submit_button(mode)
+
+            if submitted:
+                if mode == "Update":
+                    show_result(*edit_sponsor(
+                        sponsor_id, new_company, new_sponsor_type,
+                        new_contact_information,
+                    ))
+                elif not confirm:
+                    st.warning("Please confirm deletion.")
+                else:
+                    show_result(*remove_sponsor(sponsor_id))
+
+    elif section == "Reward Redemptions":
+        st.header("Reward Redemptions")
+
+        redemptions = list_redemptions()
+        st.dataframe(redemptions)
+
+        athlete_options = get_athlete_options()
+        if not athlete_options:
+            st.warning("Add an athlete before submitting a redemption request.")
+        else:
+            athlete_id = st.selectbox(
+                "Athlete",
+                options=list(athlete_options),
+                format_func=lambda value: athlete_options[value],
+            )
+            rewards = list_rewards_for_athlete(athlete_id)
+            st.subheader("Reward eligibility")
+            st.dataframe(rewards)
+            st.caption(
+                "Eligibility checks points, stock, and expiration. Submitting a "
+                "request does not deduct points or reduce reward availability."
+            )
+
+            eligible_rewards = [
+                reward for reward in rewards if reward["IsEligible"]
+            ]
+            if eligible_rewards:
+                reward_options = {
+                    reward["RewardID"]: (
+                        f'{reward["Description"]} — {reward["PointsRequired"]} '
+                        f'points (sponsored by {reward["Sponsor"]})'
+                    )
+                    for reward in eligible_rewards
+                }
+                with st.form("redeem_reward"):
+                    reward_id = st.selectbox(
+                        "Eligible reward",
+                        options=list(reward_options),
+                        format_func=lambda value: reward_options[value],
+                    )
+                    submitted = st.form_submit_button("Request Redemption")
+
+                if submitted:
+                    show_result(*redeem_reward(athlete_id, reward_id))
+            else:
+                st.info("This athlete has no currently eligible rewards.")

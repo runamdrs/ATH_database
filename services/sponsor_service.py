@@ -1,10 +1,10 @@
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_sponsors, get_sponsor_by_id,
     insert_sponsor, update_sponsor, delete_sponsor,
 )
-from delete_summary import describe_related
+from services.delete_summary import describe_related
 
 
 def list_sponsors():

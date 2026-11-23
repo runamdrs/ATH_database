@@ -1,10 +1,10 @@
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_sports, get_sport_by_id,
     insert_sport, update_sport, delete_sport,
 )
-from delete_summary import describe_related
+from services.delete_summary import describe_related
 
 
 def list_sports():

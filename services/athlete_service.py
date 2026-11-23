@@ -1,9 +1,9 @@
 import mysql.connector
 
-from database import (
+from db.database import (
     get_all_athletes, get_athlete_by_id, insert_athlete, update_athlete, delete_athlete,
 )
-from delete_summary import describe_related
+from services.delete_summary import describe_related
 
 SKILL_LEVELS = ["Beginner", "Intermediate", "Advanced"]
 
