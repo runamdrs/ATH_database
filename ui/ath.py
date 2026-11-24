@@ -92,10 +92,19 @@ def main():
         )
     else:
         current_id = None
-        st.sidebar.info("Create a profile below to log in.")
+        st.sidebar.info("Create a profile under the page menu to log in.")
 
-    # Signing up is how a new user gets a profile, so it lives next to
-    # the login, not on the Athletes page as something athletes do.
+    section = st.sidebar.radio(
+        "Browse",
+        [
+            "Athletes", "Achievements", "Activities", "Workouts", "Points",
+            "Sports", "Sponsors", "Posts", "Reward Redemptions",
+        ],
+    )
+
+    # Signing up is how a new user gets a profile, so it lives in the
+    # sidebar (below the page menu), not on the Athletes page as
+    # something athletes do.
     sport_options = get_sport_options()       # {SportID: "Sport name"}
     with st.sidebar.expander("New here? Create a profile",
                              expanded=not athlete_options):
@@ -122,14 +131,6 @@ def main():
                 show_result(True, message + " You are now logged in.")
             else:
                 st.error(message)
-
-    section = st.sidebar.radio(
-        "Browse",
-        [
-            "Athletes", "Achievements", "Activities", "Workouts", "Points",
-            "Sports", "Sponsors", "Posts", "Reward Redemptions",
-        ],
-    )
 
     if "flash" in st.session_state:
         st.success(st.session_state.pop("flash"))

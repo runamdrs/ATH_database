@@ -52,7 +52,7 @@ There are no passwords. Pick an athlete in the sidebar's **Logged in as**
 dropdown to act as that user. Everything you add is saved under that
 athlete, and the "Manage My …" sections only offer your own records, so
 switching profiles changes what you can edit or delete. To create a new
-user, open **New here? Create a profile** under the dropdown; the new athlete
+user, open **New here? Create a profile** under the Browse menu; the new athlete
 is logged in straight away. You can edit or delete only your own profile.
 
 ### Pages
